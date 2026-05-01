@@ -7,6 +7,7 @@ defmodule SymphonyElixir.Workspace do
   alias SymphonyElixir.{Config, PathSafety, SSH}
 
   @remote_workspace_marker "__SYMPHONY_WORKSPACE__"
+  @workspace_identifier_pattern ~r/^[A-Za-z0-9][A-Za-z0-9._-]*[-_][A-Za-z0-9][A-Za-z0-9._-]*$/
 
   @type worker_host :: String.t() | nil
 
@@ -82,6 +83,27 @@ defmodule SymphonyElixir.Workspace do
     File.rm_rf!(workspace)
     File.mkdir_p!(workspace)
     {:ok, workspace, true}
+  end
+
+  @spec list_workspaces() :: {:ok, [String.t()]} | {:error, term()}
+  def list_workspaces do
+    workspace_root = Config.settings!().workspace.root
+
+    case File.ls(workspace_root) do
+      {:ok, entries} ->
+        workspace_ids =
+          entries
+          |> Enum.filter(&workspace_directory_entry?(workspace_root, &1))
+          |> Enum.sort()
+
+        {:ok, workspace_ids}
+
+      {:error, :enoent} ->
+        {:ok, []}
+
+      {:error, reason} ->
+        {:error, {:workspace_list_failed, workspace_root, reason}}
+    end
   end
 
   @spec remove(Path.t()) :: {:ok, [String.t()]} | {:error, term(), String.t()}
@@ -205,6 +227,14 @@ defmodule SymphonyElixir.Workspace do
 
   defp safe_identifier(identifier) do
     String.replace(identifier || "issue", ~r/[^a-zA-Z0-9._-]/, "_")
+  end
+
+  defp workspace_directory_entry?(workspace_root, entry) when is_binary(entry) do
+    workspace = Path.join(workspace_root, entry)
+
+    String.match?(entry, @workspace_identifier_pattern) and
+      File.dir?(workspace) and
+      validate_workspace_path(workspace, nil) == :ok
   end
 
   defp maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do

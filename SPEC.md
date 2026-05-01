@@ -691,28 +691,30 @@ Distinct terminal reasons are important because retry logic and logs differ.
 - `claimed` and `running` checks are REQUIRED before launching any worker.
 - Reconciliation runs before dispatch on every tick.
 - Restart recovery is tracker-driven and filesystem-driven (without a durable orchestrator DB).
-- Startup terminal cleanup removes stale workspaces for issues already in terminal states.
+- Terminal cleanup removes stale workspaces for issues already in terminal states at startup and
+  on each poll cycle.
 
 ## 8. Polling, Scheduling, and Reconciliation
 
 ### 8.1 Poll Loop
 
-At startup, the service validates config, performs startup cleanup, schedules an immediate tick, and
-then repeats every `polling.interval_ms`.
+At startup, the service validates config, performs terminal workspace cleanup, schedules an
+immediate tick, and then repeats every `polling.interval_ms`.
 
 The effective poll interval SHOULD be updated when workflow config changes are re-applied.
 
 Tick sequence:
 
 1. Reconcile running issues.
-2. Run dispatch preflight validation.
-3. Fetch candidate issues from tracker using active states.
-4. Sort issues by dispatch priority.
-5. Dispatch eligible issues while slots remain.
-6. Notify observability/status consumers of state changes.
+2. Run terminal workspace cleanup for existing workspace directories.
+3. Run dispatch preflight validation.
+4. Fetch candidate issues from tracker using active states.
+5. Sort issues by dispatch priority.
+6. Dispatch eligible issues while slots remain.
+7. Notify observability/status consumers of state changes.
 
-If per-tick validation fails, dispatch is skipped for that tick, but reconciliation still happens
-first.
+If per-tick validation fails, dispatch is skipped for that tick, but terminal cleanup and
+reconciliation still happen first.
 
 ### 8.2 Candidate Selection Rules
 
@@ -771,8 +773,8 @@ Retry handling behavior:
 
 Note:
 
-- Terminal-state workspace cleanup is handled by startup cleanup and active-run reconciliation
-  (including terminal transitions for currently running issues).
+- Terminal-state workspace cleanup is handled by the poll-cycle workspace sweep and active-run
+  reconciliation (including terminal transitions for currently running issues).
 - Retry handling mainly operates on active candidates and releases claims when the issue is absent,
   rather than performing terminal cleanup itself.
 
@@ -797,15 +799,17 @@ Part B: Tracker state refresh
   - If tracker state is neither active nor terminal: terminate worker without workspace cleanup.
 - If state refresh fails, keep workers running and try again on the next tick.
 
-### 8.6 Startup Terminal Workspace Cleanup
+### 8.6 Terminal Workspace Cleanup
 
-When the service starts:
+When the service starts and on each poll cycle:
 
-1. Query tracker for issues in terminal states.
-2. For each returned issue identifier, remove the corresponding workspace directory.
-3. If the terminal-issues fetch fails, log a warning and continue startup.
+1. List existing issue-like workspace directories under `workspace.root`.
+2. Fetch current tracker states for those workspace issue identifiers.
+3. For each returned issue whose state is terminal, remove the corresponding workspace directory.
+4. If workspace listing or issue-state fetch fails, log a warning and continue the poll cycle.
 
-This prevents stale terminal workspaces from accumulating after restarts.
+This prevents stale terminal workspaces from accumulating after restarts or after an issue moves
+from a non-active, non-terminal state to a terminal state while Symphony is still running.
 
 ## 9. Workspace Management and Safety
 
@@ -1140,10 +1144,10 @@ An implementation MUST support these tracker adapter operations:
    - Return issues in configured active states for a configured project.
 
 2. `fetch_issues_by_states(state_names)`
-   - Used for startup terminal cleanup.
+   - Used for tracker state-list queries.
 
 3. `fetch_issue_states_by_ids(issue_ids)`
-   - Used for active-run reconciliation.
+   - Used for active-run reconciliation and workspace-sweep terminal cleanup.
 
 ### 11.2 Query Semantics (Linear)
 
@@ -1195,7 +1199,7 @@ Orchestrator behavior on tracker errors:
 
 - Candidate fetch failure: log and skip dispatch for this tick.
 - Running-state refresh failure: log and keep active workers running.
-- Startup terminal cleanup failure: log warning and continue startup.
+- Terminal workspace cleanup failure: log warning and continue startup or the current poll cycle.
 
 ### 11.5 Tracker Writes (Important Boundary)
 
@@ -1582,7 +1586,7 @@ After restart:
 - No retry timers are restored from prior process memory.
 - No running sessions are assumed recoverable.
 - Service recovers by:
-  - startup terminal workspace cleanup
+  - terminal workspace cleanup
   - fresh polling of active issues
   - re-dispatching eligible work
 

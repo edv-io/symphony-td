@@ -223,6 +223,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp maybe_dispatch(%State{} = state) do
     state = reconcile_running_issues(state)
+    run_terminal_workspace_cleanup()
 
     with :ok <- Config.validate!(),
          {:ok, issues} <- Tracker.fetch_candidate_issues(),
@@ -331,6 +332,18 @@ defmodule SymphonyElixir.Orchestrator do
   @spec select_worker_host_for_test(term(), String.t() | nil) :: String.t() | nil | :no_worker_capacity
   def select_worker_host_for_test(%State{} = state, preferred_worker_host) do
     select_worker_host(state, preferred_worker_host)
+  end
+
+  @doc false
+  @spec terminal_workspace_cleanup_for_test(
+          (-> {:ok, [String.t()]} | {:error, term()}),
+          ([String.t()] -> {:ok, [Issue.t()]} | {:error, term()}),
+          (String.t() -> term())
+        ) :: :ok
+  def terminal_workspace_cleanup_for_test(workspace_lister, issue_fetcher, cleanup_fun)
+      when is_function(workspace_lister, 0) and is_function(issue_fetcher, 1) and
+             is_function(cleanup_fun, 1) do
+    cleanup_terminal_workspaces_by_existing_dirs(workspace_lister, issue_fetcher, cleanup_fun)
   end
 
   defp reconcile_running_issue_states([], state, _active_states, _terminal_states), do: state
@@ -880,20 +893,61 @@ defmodule SymphonyElixir.Orchestrator do
   defp cleanup_issue_workspace(_identifier, _worker_host), do: :ok
 
   defp run_terminal_workspace_cleanup do
-    case Tracker.fetch_issues_by_states(Config.settings!().tracker.terminal_states) do
+    cleanup_terminal_workspaces_by_existing_dirs(
+      &Workspace.list_workspaces/0,
+      &Tracker.fetch_issue_states_by_ids/1,
+      &cleanup_issue_workspace/1
+    )
+  end
+
+  defp cleanup_terminal_workspaces_by_existing_dirs(workspace_lister, issue_fetcher, cleanup_fun)
+       when is_function(workspace_lister, 0) and is_function(issue_fetcher, 1) and
+              is_function(cleanup_fun, 1) do
+    case workspace_lister.() do
+      {:ok, []} ->
+        :ok
+
+      {:ok, workspace_issue_ids} ->
+        workspace_issue_ids
+        |> Enum.uniq()
+        |> fetch_and_cleanup_terminal_workspace_issues(issue_fetcher, cleanup_fun)
+
+      {:error, reason} ->
+        Logger.warning("Skipping terminal workspace cleanup by workspace scan; failed to list workspaces: #{inspect(reason)}")
+        :ok
+    end
+  end
+
+  defp fetch_and_cleanup_terminal_workspace_issues([], _issue_fetcher, _cleanup_fun), do: :ok
+
+  defp fetch_and_cleanup_terminal_workspace_issues(workspace_issue_ids, issue_fetcher, cleanup_fun) do
+    case issue_fetcher.(workspace_issue_ids) do
       {:ok, issues} ->
-        issues
-        |> Enum.each(fn
-          %Issue{identifier: identifier} when is_binary(identifier) ->
-            cleanup_issue_workspace(identifier)
+        terminal_states = terminal_state_set()
+
+        Enum.each(issues, fn
+          %Issue{} = issue ->
+            if terminal_issue_state?(issue.state, terminal_states) do
+              cleanup_issue_workspaces_for_issue(issue, cleanup_fun)
+            end
 
           _ ->
             :ok
         end)
 
       {:error, reason} ->
-        Logger.warning("Skipping startup terminal workspace cleanup; failed to fetch terminal issues: #{inspect(reason)}")
+        Logger.warning("Skipping terminal workspace cleanup by workspace scan; failed to fetch workspace issue states: #{inspect(reason)}")
     end
+
+    :ok
+  end
+
+  defp cleanup_issue_workspaces_for_issue(%Issue{} = issue, cleanup_fun) when is_function(cleanup_fun, 1) do
+    if is_binary(issue.identifier) do
+      cleanup_fun.(issue.identifier)
+    end
+
+    :ok
   end
 
   defp notify_dashboard do
