@@ -78,7 +78,10 @@ defmodule SymphonyElixir.Td.Adapter do
   @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}
   def create_comment(issue_id, body) when is_binary(issue_id) and is_binary(body) do
     with {:ok, dir} <- locate_project_dir(issue_id) do
-      cli_module().write(dir, "comment", issue_id, [body])
+      # `--` so td/Cobra cannot parse the body as a flag (e.g. --work-dir=/x).
+      # Same defense the dynamic tool applies to agent-supplied bodies; the
+      # callback is a public Tracker API that could carry agent-influenced text.
+      cli_module().write(dir, "comment", issue_id, ["--", body])
     end
   end
 

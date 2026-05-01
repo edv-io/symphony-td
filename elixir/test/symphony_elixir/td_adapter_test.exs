@@ -163,13 +163,22 @@ defmodule SymphonyElixir.Td.AdapterTest do
   end
 
   describe "create_comment/2" do
-    test "fan-out locates the project then runs td comment" do
+    test "fan-out locates the project then runs td comment with -- separator" do
       Process.put({FakeCli, "/work/repo-a"}, [])
       Process.put({FakeCli, "/work/repo-b"}, [td_issue("td-cccc", "open")])
 
       assert :ok = Adapter.create_comment("td-cccc", "ack")
 
-      assert_received {:write_called, "/work/repo-b", "comment", "td-cccc", ["ack"]}
+      assert_received {:write_called, "/work/repo-b", "comment", "td-cccc", ["--", "ack"]}
+    end
+
+    test "preserves a flag-shaped body literally (cobra cannot parse it as --work-dir)" do
+      Process.put({FakeCli, "/work/repo-a"}, [td_issue("td-aaaa", "open")])
+      Process.put({FakeCli, "/work/repo-b"}, [])
+
+      assert :ok = Adapter.create_comment("td-aaaa", "--work-dir=/tmp/leak")
+
+      assert_received {:write_called, "/work/repo-a", "comment", "td-aaaa", ["--", "--work-dir=/tmp/leak"]}
     end
 
     test "returns an error when the issue cannot be located in any project" do
