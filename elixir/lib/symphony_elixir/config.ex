@@ -119,7 +119,7 @@ defmodule SymphonyElixir.Config do
       is_nil(settings.tracker.kind) ->
         {:error, :missing_tracker_kind}
 
-      settings.tracker.kind not in ["linear", "memory"] ->
+      settings.tracker.kind not in ["linear", "memory", "td"] ->
         {:error, {:unsupported_tracker_kind, settings.tracker.kind}}
 
       settings.tracker.kind == "linear" and not is_binary(settings.tracker.api_key) ->
@@ -128,10 +128,19 @@ defmodule SymphonyElixir.Config do
       settings.tracker.kind == "linear" and not is_binary(settings.tracker.project_slug) ->
         {:error, :missing_linear_project_slug}
 
+      settings.tracker.kind == "td" and not td_projects_configured?(settings.tracker) ->
+        {:error, :missing_td_projects}
+
       true ->
         :ok
     end
   end
+
+  defp td_projects_configured?(%{projects: projects, scope: scope}) do
+    (is_list(projects) and projects != []) or scope == "all"
+  end
+
+  defp td_projects_configured?(_tracker), do: false
 
   defp format_config_error(reason) do
     case reason do
