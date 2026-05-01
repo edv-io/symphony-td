@@ -32,6 +32,57 @@ against it. To prevent it from picking up *every* td task, the td adapter requir
 (`tracker.filter_label`, default `symphony`). Only tasks carrying that label are eligible; you opt
 each task in by adding the label.
 
+## Run td-mode locally
+
+Prerequisites:
+
+- [`mise`](https://mise.jdx.dev/) (manages the Elixir/Erlang toolchain pinned in `elixir/mise.toml`)
+- [`codex`](https://developers.openai.com/codex/) on `PATH` (`codex --version` should work)
+- [`td`](https://github.com/4ier/td) on `PATH` for the tracker calls; `td-all` if you want
+  `scope: all` auto-discovery
+- A Git checkout of every project you want Symphony to act on (so the after_create hook can derive
+  the repo URL from `git -C <dir> remote get-url origin`)
+
+```sh
+# 1. Get the build
+git clone https://github.com/edv-io/symphony-td ~/Projects/symphony-td
+cd ~/Projects/symphony-td/elixir
+mise trust && mise install
+mise exec -- mix deps.get
+mise exec -- mix compile
+mise exec -- mix build           # produces ./bin/symphony
+
+# 2. Author your local workflow (gitignored — never commit your project list)
+cp WORKFLOW.td.example.md ../WORKFLOW.local.md
+# edit ../WORKFLOW.local.md:
+#   - set tracker.scope: all  (or list explicit projects)
+#   - keep tracker.filter_label: symphony
+#   - tweak agent.max_concurrent_agents to taste (start with 1–2)
+
+# 3. Opt a td task in by adding the symphony label
+td update <issue-id> --labels "...,symphony"
+
+# 4. Start the orchestrator (long-running)
+cd ~/Projects/symphony-td/elixir
+mise exec -- ./bin/symphony ../WORKFLOW.local.md
+```
+
+Symphony polls td every `polling.interval_ms`, claims any open `symphony`-labelled issue, creates a
+fresh workspace under `workspace.root`, runs the `after_create` hook (which clones the issue's
+project repo using `$SYMPHONY_ISSUE_REPO_URL`), launches Codex in app-server mode, and feeds it the
+prompt body from `WORKFLOW.local.md` with `{{ issue.* }}` interpolated. To stop everything: Ctrl-C
+the process; running agents exit and workspaces stay around for inspection.
+
+To watch what's happening live, tail the log directory you set in `--logs-root` (default
+`./log`):
+
+```sh
+tail -f ~/Projects/symphony-td/elixir/log/*.log
+```
+
+To remove an issue from Symphony's queue mid-run, drop the `symphony` label or move it to a
+`terminal_states` value (`closed`).
+
 [![Symphony demo video preview](.github/media/symphony-demo-poster.jpg)](.github/media/symphony-demo.mp4)
 
 _In this [demo video](.github/media/symphony-demo.mp4), Symphony monitors a Linear board for work and spawns agents to handle the tasks. The agents complete the tasks and provide proof of work: CI status, PR review feedback, complexity analysis, and walkthrough videos. When accepted, the agents land the PR safely. Engineers do not need to supervise Codex; they can manage the work at a higher level._
