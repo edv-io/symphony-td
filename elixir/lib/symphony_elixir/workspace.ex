@@ -87,7 +87,12 @@ defmodule SymphonyElixir.Workspace do
 
   @spec list_workspaces() :: {:ok, [String.t()]} | {:error, term()}
   def list_workspaces do
-    workspace_root = Config.settings!().workspace.root
+    # Path.expand normalises a literal `~/...` (the raw config value) to an
+    # absolute path the same way create_for_issue / workspace_path_for_issue
+    # eventually do via PathSafety.canonicalize. Without it File.ls hits
+    # :enoent on a directory literally named `~` and the cleanup loop sees
+    # zero workspaces every tick.
+    workspace_root = Path.expand(Config.settings!().workspace.root)
 
     case File.ls(workspace_root) do
       {:ok, entries} ->
