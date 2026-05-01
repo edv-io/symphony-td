@@ -93,6 +93,23 @@ defmodule SymphonyElixir.Td.Cli do
   @spec allowed_write_subcommands() :: [String.t()]
   def allowed_write_subcommands, do: @allowed_write_subcommands
 
+  @doc """
+  Returns true when a string is safe to pass to td as a flag value or positional
+  body. Rejects td/Cobra's `@<path>` (read from file) and `-` (stdin) literal-value
+  primitives — both turn an autonomous tracker write into a local-file or
+  process-stdin read.
+
+  Used by both the dynamic tool (for agent-supplied bodies / handoff values) and
+  the adapter (for any caller that reaches `create_comment/2` with text that may
+  have been influenced by agent output or external input).
+  """
+  @spec literal_safe?(String.t() | term()) :: boolean()
+  def literal_safe?(value) when is_binary(value) do
+    not (value == "-" or String.starts_with?(value, "@"))
+  end
+
+  def literal_safe?(_), do: false
+
   defp run(args, binary \\ nil) do
     bin = binary || td_binary()
     timeout_ms = timeout_ms()

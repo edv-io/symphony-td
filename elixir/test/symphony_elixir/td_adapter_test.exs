@@ -181,6 +181,22 @@ defmodule SymphonyElixir.Td.AdapterTest do
       assert_received {:write_called, "/work/repo-a", "comment", "td-aaaa", ["--", "--work-dir=/tmp/leak"]}
     end
 
+    test "rejects @<path> body before spawning td (file-read primitive)" do
+      Process.put({FakeCli, "/work/repo-a"}, [td_issue("td-aaaa", "open")])
+      Process.put({FakeCli, "/work/repo-b"}, [])
+
+      assert {:error, :td_unsafe_literal_body} = Adapter.create_comment("td-aaaa", "@/etc/passwd")
+      refute_received {:write_called, _, _, _, _}
+    end
+
+    test "rejects bare - body (stdin primitive)" do
+      Process.put({FakeCli, "/work/repo-a"}, [td_issue("td-aaaa", "open")])
+      Process.put({FakeCli, "/work/repo-b"}, [])
+
+      assert {:error, :td_unsafe_literal_body} = Adapter.create_comment("td-aaaa", "-")
+      refute_received {:write_called, _, _, _, _}
+    end
+
     test "returns an error when the issue cannot be located in any project" do
       Process.put({FakeCli, "/work/repo-a"}, [])
       Process.put({FakeCli, "/work/repo-b"}, [])

@@ -294,15 +294,10 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     end)
   end
 
-  # td (Cobra) treats `@<path>` as "read value from file" and `-` as stdin for
-  # several string flags including --done/--remaining/--decision/--uncertain.
-  # Refuse any agent-supplied value that would invoke either primitive — those
-  # turn an autonomous tracker write into a local file-read.
-  defp td_literal_safe?(value) when is_binary(value) do
-    not (value == "-" or String.starts_with?(value, "@"))
-  end
-
-  defp td_literal_safe?(_), do: false
+  # Delegates to the shared check in Td.Cli so both the agent path (this module)
+  # and the trusted-caller path (Td.Adapter.create_comment/2) reject the same
+  # set of values.
+  defp td_literal_safe?(value), do: TdCli.literal_safe?(value)
 
   defp resolve_td_project_dir(issue_id, td_lister) do
     tracker = Config.settings!().tracker
