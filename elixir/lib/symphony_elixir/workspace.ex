@@ -205,6 +205,21 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  @spec run_before_turn_hook(Path.t(), map() | String.t() | nil, worker_host()) :: :ok
+  def run_before_turn_hook(workspace, issue_or_identifier, worker_host \\ nil) when is_binary(workspace) do
+    issue_context = issue_context(issue_or_identifier)
+    hooks = Config.settings!().hooks
+
+    case hooks.before_turn do
+      nil ->
+        :ok
+
+      command ->
+        run_hook(command, workspace, issue_context, "before_turn", worker_host)
+        |> ignore_hook_failure()
+    end
+  end
+
   @spec run_after_run_hook(Path.t(), map() | String.t() | nil, worker_host()) :: :ok
   def run_after_run_hook(workspace, issue_or_identifier, worker_host \\ nil) when is_binary(workspace) do
     issue_context = issue_context(issue_or_identifier)

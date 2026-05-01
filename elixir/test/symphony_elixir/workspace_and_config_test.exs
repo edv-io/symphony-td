@@ -700,6 +700,24 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "before_turn hook is a no-op when not configured" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-before-turn-noop-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      assert {:ok, workspace} = Workspace.create_for_issue("MT-BEFORE-TURN-NOOP")
+      assert :ok = Workspace.run_before_turn_hook(workspace, "MT-BEFORE-TURN-NOOP")
+      assert File.dir?(workspace)
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
   test "workspace remove continues when before_remove hook fails" do
     test_root =
       Path.join(
@@ -1346,6 +1364,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         workspace_root: workspace_root,
         worker_ssh_hosts: ["worker-01:2200"],
         hook_before_run: "echo before-run",
+        hook_before_turn: "echo before-turn",
         hook_after_run: "echo after-run",
         hook_before_remove: "echo before-remove"
       )
@@ -1354,6 +1373,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       assert Config.settings!().workspace.root == workspace_root
       assert {:ok, ^workspace_path} = Workspace.create_for_issue("MT-SSH-WS", "worker-01:2200")
       assert :ok = Workspace.run_before_run_hook(workspace_path, "MT-SSH-WS", "worker-01:2200")
+      assert :ok = Workspace.run_before_turn_hook(workspace_path, "MT-SSH-WS", "worker-01:2200")
       assert :ok = Workspace.run_after_run_hook(workspace_path, "MT-SSH-WS", "worker-01:2200")
       assert :ok = Workspace.remove_issue_workspaces("MT-SSH-WS", "worker-01:2200")
 
@@ -1363,6 +1383,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       assert trace =~ "~/.symphony-remote-workspaces/MT-SSH-WS"
       assert trace =~ "${workspace#~/}"
       assert trace =~ "echo before-run"
+      assert trace =~ "echo before-turn"
       assert trace =~ "echo after-run"
       assert trace =~ "echo before-remove"
       assert trace =~ "rm -rf"

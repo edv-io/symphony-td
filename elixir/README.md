@@ -95,6 +95,11 @@ workspace:
 hooks:
   after_create: |
     git clone git@github.com:your-org/your-repo.git .
+  before_turn: |
+    git fetch origin main:refs/remotes/origin/main --quiet || exit 0
+    git merge --ff-only origin/main 2>/dev/null || \
+      git rebase origin/main || \
+      { echo 'rebase conflict - staying on current base'; git rebase --abort >/dev/null 2>&1 || true; exit 0; }
 agent:
   max_concurrent_agents: 10
   max_turns: 20
@@ -125,6 +130,10 @@ Notes:
   identifier, title, and body.
 - Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
   `git clone ... .` there, along with any other setup commands you need.
+- Use `hooks.before_turn` to refresh a reused workspace after a Codex turn completes and before
+  Symphony dispatches the next turn. This is a good place for a best-effort `git fetch` plus
+  fast-forward or rebase onto `origin/main`. Non-zero exits are logged and ignored so refresh
+  conflicts do not abort the active run.
 - If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
 - `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.

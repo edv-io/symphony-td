@@ -30,6 +30,15 @@ hooks:
     if command -v mise >/dev/null 2>&1 && [ -f mise.toml ]; then
       mise trust && mise install
     fi
+  # Runs between completed Codex turns before Symphony dispatches the next
+  # turn. Failures are logged and ignored by Symphony, so this hook should
+  # avoid leaving conflict state behind when a rebase cannot be applied.
+  before_turn: |
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
+    git fetch origin main:refs/remotes/origin/main --quiet || exit 0
+    git merge --ff-only origin/main 2>/dev/null || \
+      git rebase origin/main || \
+      { echo 'rebase conflict - staying on current base'; git rebase --abort >/dev/null 2>&1 || true; exit 0; }
 agent:
   max_concurrent_agents: 2
   max_turns: 20

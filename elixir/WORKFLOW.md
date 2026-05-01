@@ -23,6 +23,12 @@ hooks:
     if command -v mise >/dev/null 2>&1; then
       cd elixir && mise trust && mise exec -- mix deps.get
     fi
+  before_turn: |
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
+    git fetch origin main:refs/remotes/origin/main --quiet || exit 0
+    git merge --ff-only origin/main 2>/dev/null || \
+      git rebase origin/main || \
+      { echo 'rebase conflict - staying on current base'; git rebase --abort >/dev/null 2>&1 || true; exit 0; }
   before_remove: |
     cd elixir && mise exec -- mix workspace.before_remove
 agent:
