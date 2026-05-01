@@ -1,7 +1,7 @@
 # Symphony (td-driven fork)
 
 > **This is a fork of [openai/symphony](https://github.com/openai/symphony) with the tracker rewired
-> from Linear to [`td`](https://github.com/4ier/td) — a local SQLite-backed task CLI.** Use upstream
+> from Linear to [`td`](https://github.com/marcus/sidecar) — a local SQLite-backed task CLI.** Use upstream
 > if you want Linear; use this fork if your work lives in td across one or more project directories.
 
 Symphony turns project work into isolated, autonomous implementation runs, allowing teams to manage
@@ -38,7 +38,7 @@ Prerequisites:
 
 - [`mise`](https://mise.jdx.dev/) (manages the Elixir/Erlang toolchain pinned in `elixir/mise.toml`)
 - [`codex`](https://developers.openai.com/codex/) on `PATH` (`codex --version` should work)
-- [`td`](https://github.com/4ier/td) on `PATH` for the tracker calls; `td-all` if you want
+- [`td`](https://github.com/marcus/sidecar) on `PATH` for the tracker calls; `td-all` if you want
   `scope: all` auto-discovery
 - A Git checkout of every project you want Symphony to act on (so the after_create hook can derive
   the repo URL from `git -C <dir> remote get-url origin`)
