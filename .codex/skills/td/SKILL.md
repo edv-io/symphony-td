@@ -2,7 +2,7 @@
 name: td
 description: |
   Use Symphony's `td_cli` client tool for tracker writes against a `td`
-  (https://github.com/4ier/td) database — comments, state transitions,
+  (https://github.com/marcus/sidecar) database — comments, state transitions,
   handoffs — when running inside a Symphony td-mode app-server session.
 ---
 
