@@ -272,9 +272,9 @@ defmodule SymphonyElixir.Td.Adapter do
       "open" -> {:ok, "unstart", []}
       "in_review" -> {:ok, "review", []}
       "in review" -> {:ok, "review", []}
-      "closed" -> {:ok, "done", ["--self-close-exception", "symphony"]}
-      "done" -> {:ok, "done", ["--self-close-exception", "symphony"]}
-      "blocked" -> {:ok, "block", ["-m", "blocked by symphony"]}
+      "closed" -> {:ok, "done", ["--self-close-exception=symphony"]}
+      "done" -> {:ok, "done", ["--self-close-exception=symphony"]}
+      "blocked" -> {:ok, "block", ["--reason=blocked by symphony"]}
       _ -> {:error, {:td_unsupported_state, state_name}}
     end
   end

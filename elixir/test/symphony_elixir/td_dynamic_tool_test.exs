@@ -134,7 +134,7 @@ defmodule SymphonyElixir.Codex.TdDynamicToolTest do
   end
 
   describe "argument shape per subcommand" do
-    test "comment requires a body and passes it as the sole positional arg" do
+    test "comment requires a body and passes it after a -- separator" do
       DynamicTool.execute(
         "td_cli",
         %{"subcommand" => "comment", "issue_id" => "td-2c2676", "body" => "Reproduced locally."},
@@ -142,7 +142,7 @@ defmodule SymphonyElixir.Codex.TdDynamicToolTest do
         td_lister: SpyTd.lister(self(), "/work/repo-a")
       )
 
-      assert_received {:td_runner_called, "/work/repo-a", "comment", "td-2c2676", ["Reproduced locally."]}
+      assert_received {:td_runner_called, "/work/repo-a", "comment", "td-2c2676", ["--", "Reproduced locally."]}
     end
 
     test "comment without body is rejected" do
@@ -159,7 +159,7 @@ defmodule SymphonyElixir.Codex.TdDynamicToolTest do
       assert payload["error"]["message"] =~ "body"
     end
 
-    test "block wraps body in -m flag — body cannot be a freestanding arg" do
+    test "block wraps body in --reason= flag (literal value, body cannot be a freestanding arg)" do
       DynamicTool.execute(
         "td_cli",
         %{"subcommand" => "block", "issue_id" => "td-2c2676", "body" => "Waiting on access"},
@@ -167,7 +167,7 @@ defmodule SymphonyElixir.Codex.TdDynamicToolTest do
         td_lister: SpyTd.lister(self(), "/work/repo-a")
       )
 
-      assert_received {:td_runner_called, "/work/repo-a", "block", "td-2c2676", ["-m", "Waiting on access"]}
+      assert_received {:td_runner_called, "/work/repo-a", "block", "td-2c2676", ["--reason=Waiting on access"]}
     end
 
     test "no-arg subcommands receive empty arg list even if body is supplied" do
@@ -185,7 +185,7 @@ defmodule SymphonyElixir.Codex.TdDynamicToolTest do
       assert_received {:td_runner_called, "/work/repo-a", "review", "td-2c2676", []}
     end
 
-    test "handoff only emits flag pairs from the four named keys" do
+    test "handoff only emits flag=value pairs from the four named keys" do
       DynamicTool.execute(
         "td_cli",
         %{
@@ -206,33 +206,167 @@ defmodule SymphonyElixir.Codex.TdDynamicToolTest do
       assert_received {:td_runner_called, "/work/repo-a", "handoff", "td-2c2676", args}
 
       assert args == [
-               "--done",
-               "wrote adapter",
-               "--done",
-               "added tests",
-               "--remaining",
-               "wire the dynamic tool",
-               "--decision",
-               "used fan-out",
-               "--uncertain",
-               "td-all symlink behavior"
+               "--done=wrote adapter",
+               "--done=added tests",
+               "--remaining=wire the dynamic tool",
+               "--decision=used fan-out",
+               "--uncertain=td-all symlink behavior"
              ]
 
-      refute Enum.any?(args, &(&1 in ["--rm-rf /", "-w /other", "evil_extra_field"]))
+      refute Enum.any?(args, &String.contains?(&1, "evil_extra_field"))
+      refute Enum.any?(args, &String.contains?(&1, "--rm-rf"))
+      refute Enum.any?(args, &String.contains?(&1, "-w /other"))
     end
 
-    test "agent-supplied flag-shaped body for log/comment is passed verbatim — td treats it as positional" do
-      # The point is *not* that we reject "--all" as a body — it's that the body is never
-      # an argv flag because it's always preceded by the subcommand keyword. td's CLI
-      # interprets it as the comment text. We assert the wire shape.
+    test "handoff rejects values that would invoke td's @file or - stdin literal" do
+      response =
+        DynamicTool.execute(
+          "td_cli",
+          %{
+            "subcommand" => "handoff",
+            "issue_id" => "td-2c2676",
+            "handoff" => %{"done" => ["@/etc/passwd"]}
+          },
+          td_runner: SpyTd.runner(self()),
+          td_lister: SpyTd.lister(self(), "/work/repo-a")
+        )
+
+      assert response["success"] == false
+      payload = Jason.decode!(response["output"])
+      assert payload["error"]["message"] =~ "stdin or a file"
+      refute_received {:td_runner_called, _, _, _, _}
+    end
+
+    test "handoff rejects bare - (stdin)" do
+      response =
+        DynamicTool.execute(
+          "td_cli",
+          %{
+            "subcommand" => "handoff",
+            "issue_id" => "td-2c2676",
+            "handoff" => %{"remaining" => ["-"]}
+          },
+          td_runner: SpyTd.runner(self()),
+          td_lister: SpyTd.lister(self(), "/work/repo-a")
+        )
+
+      assert response["success"] == false
+      payload = Jason.decode!(response["output"])
+      assert payload["error"]["message"] =~ "stdin or a file"
+    end
+
+    test "comment rejects body that would be td's @file primitive" do
+      response =
+        DynamicTool.execute(
+          "td_cli",
+          %{"subcommand" => "comment", "issue_id" => "td-2c2676", "body" => "@/etc/passwd"},
+          td_runner: SpyTd.runner(self()),
+          td_lister: SpyTd.lister(self(), "/work/repo-a")
+        )
+
+      assert response["success"] == false
+      payload = Jason.decode!(response["output"])
+      assert payload["error"]["message"] =~ "stdin or a file"
+    end
+
+    test "done supplies --self-close-exception so agents can close their own work" do
       DynamicTool.execute(
         "td_cli",
-        %{"subcommand" => "comment", "issue_id" => "td-2c2676", "body" => "--rm-rf /"},
+        %{"subcommand" => "done", "issue_id" => "td-2c2676"},
         td_runner: SpyTd.runner(self()),
         td_lister: SpyTd.lister(self(), "/work/repo-a")
       )
 
-      assert_received {:td_runner_called, "/work/repo-a", "comment", "td-2c2676", ["--rm-rf /"]}
+      assert_received {:td_runner_called, "/work/repo-a", "done", "td-2c2676", ["--self-close-exception=symphony"]}
+    end
+
+    test "close mirrors done with --self-close-exception" do
+      DynamicTool.execute(
+        "td_cli",
+        %{"subcommand" => "close", "issue_id" => "td-2c2676"},
+        td_runner: SpyTd.runner(self()),
+        td_lister: SpyTd.lister(self(), "/work/repo-a")
+      )
+
+      assert_received {:td_runner_called, "/work/repo-a", "close", "td-2c2676", ["--self-close-exception=symphony"]}
+    end
+
+    test "flag-shaped comment body is preserved literally after the -- separator" do
+      DynamicTool.execute(
+        "td_cli",
+        %{"subcommand" => "comment", "issue_id" => "td-2c2676", "body" => "--work-dir=/tmp/x"},
+        td_runner: SpyTd.runner(self()),
+        td_lister: SpyTd.lister(self(), "/work/repo-a")
+      )
+
+      assert_received {:td_runner_called, "/work/repo-a", "comment", "td-2c2676", ["--", "--work-dir=/tmp/x"]}
+    end
+
+  end
+
+  describe "td adapter state-mapping argv shapes" do
+    # Smoke that the adapter (which is the *trusted* path) also uses literal-flag
+    # forms (--reason=, --self-close-exception=) so an agent prompt can't smuggle
+    # a value through update_issue_state via the comment text or anything else.
+    alias SymphonyElixir.Td.Adapter
+
+    defmodule AdapterFakeCli do
+      @moduledoc false
+
+      def list_json(project_dir, opts) do
+        send(self(), {:adapter_list_json, project_dir, opts})
+
+        case Process.get({__MODULE__, project_dir}) do
+          nil -> {:ok, []}
+          list when is_list(list) -> {:ok, filter_ids(list, opts[:ids])}
+        end
+      end
+
+      def write(project_dir, subcommand, issue_id, args) do
+        send(self(), {:adapter_write, project_dir, subcommand, issue_id, args})
+        :ok
+      end
+
+      def list_project_dirs do
+        {:ok, []}
+      end
+
+      defp filter_ids(list, nil), do: list
+      defp filter_ids(list, []), do: list
+
+      defp filter_ids(list, ids) when is_list(ids) do
+        set = MapSet.new(ids)
+        Enum.filter(list, &MapSet.member?(set, &1["id"]))
+      end
+    end
+
+    setup do
+      prior_cli = Application.get_env(:symphony_elixir, :td_cli_module)
+      Application.put_env(:symphony_elixir, :td_cli_module, AdapterFakeCli)
+
+      Process.put({AdapterFakeCli, "/work/repo-a"}, [
+        %{"id" => "td-aaaa", "title" => "x", "status" => "open", "priority" => "P2", "labels" => ["symphony"]}
+      ])
+
+      on_exit(fn ->
+        if is_nil(prior_cli) do
+          Application.delete_env(:symphony_elixir, :td_cli_module)
+        else
+          Application.put_env(:symphony_elixir, :td_cli_module, prior_cli)
+        end
+      end)
+
+      :ok
+    end
+
+    test "blocked maps to --reason=<...> not -m" do
+      assert :ok = Adapter.update_issue_state("td-aaaa", "blocked")
+      assert_received {:adapter_write, "/work/repo-a", "block", "td-aaaa", ["--reason=blocked by symphony"]}
+    end
+
+    test "closed maps to --self-close-exception=<...> (literal form)" do
+      assert :ok = Adapter.update_issue_state("td-aaaa", "closed")
+      assert_received {:adapter_write, "/work/repo-a", "done", "td-aaaa", ["--self-close-exception=symphony"]}
     end
   end
 end

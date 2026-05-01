@@ -202,7 +202,7 @@ defmodule SymphonyElixir.Td.AdapterTest do
       Process.put({FakeCli, "/work/repo-b"}, [])
 
       assert :ok = Adapter.update_issue_state("td-aaaa", "closed")
-      assert_received {:write_called, "/work/repo-a", "done", "td-aaaa", ["--self-close-exception", "symphony"]}
+      assert_received {:write_called, "/work/repo-a", "done", "td-aaaa", ["--self-close-exception=symphony"]}
     end
 
     test "rejects unsupported state names" do

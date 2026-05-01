@@ -216,21 +216,54 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   # Build the exact CLI args list per allowlisted subcommand. Only Symphony's
   # own values can produce flags — agent inputs are restricted to free-text
   # bodies and the four handoff fields. No agent string is ever passed as a
-  # standalone argv element when it could be interpreted as a flag.
-  defp build_td_args("comment", body, _) when is_binary(body) and body != "", do: {:ok, [body]}
-  defp build_td_args("log", body, _) when is_binary(body) and body != "", do: {:ok, [body]}
+  # standalone argv element when it could be interpreted as a flag:
+  #
+  #   - Free-text positional bodies (comment, log) are preceded by `--` so td's
+  #     Cobra parser treats subsequent tokens as positional even when they
+  #     start with `-` or contain `--work-dir=...`.
+  #   - Flag values (block --reason, handoff --done/...) use the `--flag=value`
+  #     form so td treats the value as a literal even if it starts with `-`.
+  #   - Handoff and block values are rejected if they would invoke td's `@file`
+  #     or `-` (stdin) literal-value mechanisms — those are file-read primitives
+  #     that should never be controllable from an untrusted prompt.
+  defp build_td_args("comment", body, _) when is_binary(body) and body != "" do
+    if td_literal_safe?(body) do
+      {:ok, ["--", body]}
+    else
+      {:error, :td_unsafe_literal_body}
+    end
+  end
+
+  defp build_td_args("log", body, _) when is_binary(body) and body != "" do
+    if td_literal_safe?(body) do
+      {:ok, ["--", body]}
+    else
+      {:error, :td_unsafe_literal_body}
+    end
+  end
 
   defp build_td_args("block", body, _) when is_binary(body) and body != "" do
-    {:ok, ["-m", body]}
+    if td_literal_safe?(body) do
+      {:ok, ["--reason=" <> body]}
+    else
+      {:error, :td_unsafe_literal_body}
+    end
   end
 
   defp build_td_args("block", _, _), do: {:ok, []}
 
   defp build_td_args("handoff", _body, %{} = handoff) do
-    {:ok, build_handoff_args(handoff)}
+    build_handoff_args(handoff)
   end
 
   defp build_td_args("handoff", _body, _), do: {:ok, []}
+
+  # done / close: agent path mirrors the adapter and supplies the
+  # self-close-exception so agents can actually terminate an issue they
+  # implemented. Flag uses the `=` form so the literal cannot become argv noise.
+  defp build_td_args(sub, _, _) when sub in ["done", "close"] do
+    {:ok, ["--self-close-exception=symphony"]}
+  end
 
   defp build_td_args(sub, _, _) when sub in @no_arg_subcommands, do: {:ok, []}
 
@@ -241,15 +274,35 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp build_td_args(sub, _, _), do: {:error, {:td_disallowed_subcommand, sub}}
 
   defp build_handoff_args(handoff) when is_map(handoff) do
-    Enum.flat_map(@handoff_flags, fn flag ->
+    Enum.reduce_while(@handoff_flags, {:ok, []}, fn flag, {:ok, acc} ->
       values = handoff[flag] || handoff[String.to_atom(flag)] || []
 
       values
       |> List.wrap()
       |> Enum.filter(&is_binary/1)
-      |> Enum.flat_map(fn value -> ["--#{flag}", value] end)
+      |> Enum.reduce_while({:ok, []}, fn value, {:ok, vacc} ->
+        if td_literal_safe?(value) do
+          {:cont, {:ok, vacc ++ ["--#{flag}=" <> value]}}
+        else
+          {:halt, {:error, {:td_unsafe_handoff_value, flag}}}
+        end
+      end)
+      |> case do
+        {:ok, flag_args} -> {:cont, {:ok, acc ++ flag_args}}
+        {:error, _} = err -> {:halt, err}
+      end
     end)
   end
+
+  # td (Cobra) treats `@<path>` as "read value from file" and `-` as stdin for
+  # several string flags including --done/--remaining/--decision/--uncertain.
+  # Refuse any agent-supplied value that would invoke either primitive — those
+  # turn an autonomous tracker write into a local file-read.
+  defp td_literal_safe?(value) when is_binary(value) do
+    not (value == "-" or String.starts_with?(value, "@"))
+  end
+
+  defp td_literal_safe?(_), do: false
 
   defp resolve_td_project_dir(issue_id, td_lister) do
     tracker = Config.settings!().tracker
@@ -493,6 +546,23 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       "error" => %{
         "message" => "`td_cli` subcommand `#{subcommand}` requires a non-empty `body`.",
         "subcommand" => subcommand
+      }
+    }
+  end
+
+  defp tool_error_payload(:td_unsafe_literal_body) do
+    %{
+      "error" => %{
+        "message" => "`td_cli.body` cannot be `-` or start with `@` — those tell td to read from stdin or a file."
+      }
+    }
+  end
+
+  defp tool_error_payload({:td_unsafe_handoff_value, flag}) do
+    %{
+      "error" => %{
+        "message" => "`td_cli.handoff.#{flag}` values cannot be `-` or start with `@` — those tell td to read from stdin or a file.",
+        "flag" => flag
       }
     }
   end
