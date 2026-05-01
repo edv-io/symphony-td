@@ -87,7 +87,12 @@ defmodule SymphonyElixir.Workspace do
 
   @spec list_workspaces() :: {:ok, [String.t()]} | {:error, term()}
   def list_workspaces do
-    workspace_root = Config.settings!().workspace.root
+    # Path.expand normalises a literal `~/...` (the raw config value) to an
+    # absolute path the same way create_for_issue / workspace_path_for_issue
+    # eventually do via PathSafety.canonicalize. Without it File.ls hits
+    # :enoent on a directory literally named `~` and the cleanup loop sees
+    # zero workspaces every tick.
+    workspace_root = Path.expand(Config.settings!().workspace.root)
 
     case File.ls(workspace_root) do
       {:ok, entries} ->
@@ -328,7 +333,11 @@ defmodule SymphonyElixir.Workspace do
 
     task =
       Task.async(fn ->
-        System.cmd("sh", ["-lc", command], cd: workspace, stderr_to_stdout: true)
+        System.cmd("sh", ["-lc", command],
+          cd: workspace,
+          stderr_to_stdout: true,
+          env: hook_env(issue_context)
+        )
       end)
 
     case Task.yield(task, timeout_ms) do
@@ -349,7 +358,7 @@ defmodule SymphonyElixir.Workspace do
 
     Logger.info("Running workspace hook hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=#{worker_host}")
 
-    case run_remote_command(worker_host, "cd #{shell_escape(workspace)} && #{command}", timeout_ms) do
+    case run_remote_command(worker_host, hook_env_exports(issue_context) <> "cd #{shell_escape(workspace)} && #{command}", timeout_ms) do
       {:ok, cmd_result} ->
         handle_hook_command_result(cmd_result, workspace, issue_context, hook_name)
 
@@ -486,10 +495,15 @@ defmodule SymphonyElixir.Workspace do
   defp worker_host_for_log(nil), do: "local"
   defp worker_host_for_log(worker_host), do: worker_host
 
-  defp issue_context(%{id: issue_id, identifier: identifier}) do
+  defp issue_context(%{id: issue_id, identifier: identifier} = issue) do
     %{
       issue_id: issue_id,
-      issue_identifier: identifier || "issue"
+      issue_identifier: identifier || "issue",
+      issue_title: Map.get(issue, :title),
+      issue_state: Map.get(issue, :state),
+      issue_url: Map.get(issue, :url),
+      issue_repo_url: Map.get(issue, :repo_url),
+      issue_project_dir: Map.get(issue, :project_dir)
     }
   end
 
@@ -509,5 +523,29 @@ defmodule SymphonyElixir.Workspace do
 
   defp issue_log_context(%{issue_id: issue_id, issue_identifier: issue_identifier}) do
     "issue_id=#{issue_id || "n/a"} issue_identifier=#{issue_identifier || "issue"}"
+  end
+
+  # Per-hook environment so hook scripts can resolve per-issue data without
+  # being templated into the command string. Used by both the local sh exec
+  # and (via hook_env_exports/1) the SSH command path.
+  defp hook_env(issue_context) when is_map(issue_context) do
+    [
+      {"SYMPHONY_ISSUE_ID", issue_context[:issue_id]},
+      {"SYMPHONY_ISSUE_IDENTIFIER", issue_context[:issue_identifier]},
+      {"SYMPHONY_ISSUE_TITLE", issue_context[:issue_title]},
+      {"SYMPHONY_ISSUE_STATE", issue_context[:issue_state]},
+      {"SYMPHONY_ISSUE_URL", issue_context[:issue_url]},
+      {"SYMPHONY_ISSUE_REPO_URL", issue_context[:issue_repo_url]},
+      {"SYMPHONY_ISSUE_PROJECT_DIR", issue_context[:issue_project_dir]}
+    ]
+    |> Enum.reject(fn {_name, value} -> is_nil(value) or value == "" end)
+    |> Enum.map(fn {name, value} -> {name, to_string(value)} end)
+  end
+
+  defp hook_env_exports(issue_context) when is_map(issue_context) do
+    issue_context
+    |> hook_env()
+    |> Enum.map(fn {name, value} -> "export #{name}=#{shell_escape(value)}; " end)
+    |> Enum.join("")
   end
 end

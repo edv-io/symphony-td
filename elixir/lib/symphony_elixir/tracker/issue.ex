@@ -1,6 +1,13 @@
-defmodule SymphonyElixir.Linear.Issue do
+defmodule SymphonyElixir.Tracker.Issue do
   @moduledoc """
-  Normalized Linear issue representation used by the orchestrator.
+  Tracker-agnostic, normalized issue representation used by the orchestrator.
+
+  All tracker adapters (Linear, td, Memory) build values of this struct so the
+  orchestrator never has to know which backend produced an issue.
+
+  Backend-specific routing data (`repo_url`, `project_dir`) is optional and is
+  populated by adapters that need per-issue workspace bootstrap (such as the
+  td adapter, where each issue lives in a different repo).
   """
 
   defstruct [
@@ -13,6 +20,8 @@ defmodule SymphonyElixir.Linear.Issue do
     :branch_name,
     :url,
     :assignee_id,
+    :repo_url,
+    :project_dir,
     blocked_by: [],
     labels: [],
     assigned_to_worker: true,
@@ -30,6 +39,8 @@ defmodule SymphonyElixir.Linear.Issue do
           branch_name: String.t() | nil,
           url: String.t() | nil,
           assignee_id: String.t() | nil,
+          repo_url: String.t() | nil,
+          project_dir: String.t() | nil,
           labels: [String.t()],
           assigned_to_worker: boolean(),
           created_at: DateTime.t() | nil,
