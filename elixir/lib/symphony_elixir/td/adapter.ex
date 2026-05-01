@@ -17,8 +17,11 @@ defmodule SymphonyElixir.Td.Adapter do
   require Logger
 
   alias SymphonyElixir.Config
-  alias SymphonyElixir.Td.Cli
   alias SymphonyElixir.Tracker.Issue
+
+  defp cli_module do
+    Application.get_env(:symphony_elixir, :td_cli_module, SymphonyElixir.Td.Cli)
+  end
 
   @impl true
   @spec fetch_candidate_issues() :: {:ok, [Issue.t()]} | {:error, term()}
@@ -75,7 +78,7 @@ defmodule SymphonyElixir.Td.Adapter do
   @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}
   def create_comment(issue_id, body) when is_binary(issue_id) and is_binary(body) do
     with {:ok, dir} <- locate_project_dir(issue_id) do
-      Cli.write(dir, "comment", issue_id, [body])
+      cli_module().write(dir, "comment", issue_id, [body])
     end
   end
 
@@ -85,7 +88,7 @@ defmodule SymphonyElixir.Td.Adapter do
       when is_binary(issue_id) and is_binary(state_name) do
     with {:ok, dir} <- locate_project_dir(issue_id),
          {:ok, subcommand, args} <- map_state_to_command(state_name) do
-      Cli.write(dir, subcommand, issue_id, args)
+      cli_module().write(dir, subcommand, issue_id, args)
     end
   end
 
@@ -99,7 +102,7 @@ defmodule SymphonyElixir.Td.Adapter do
         {:ok, explicit}
 
       tracker.scope == "all" ->
-        Cli.list_project_dirs()
+        cli_module().list_project_dirs()
 
       true ->
         {:error, :td_no_projects_configured}
@@ -108,7 +111,7 @@ defmodule SymphonyElixir.Td.Adapter do
 
   defp fan_out_list(dirs, list_opts) do
     Enum.reduce_while(dirs, {:ok, []}, fn dir, {:ok, acc} ->
-      case Cli.list_json(dir, list_opts) do
+      case cli_module().list_json(dir, list_opts) do
         {:ok, raw_issues} ->
           issues = Enum.map(raw_issues, &normalize_issue(&1, dir))
           {:cont, {:ok, acc ++ issues}}
@@ -131,7 +134,7 @@ defmodule SymphonyElixir.Td.Adapter do
 
     with {:ok, dirs} <- resolve_project_dirs(tracker) do
       Enum.reduce_while(dirs, {:error, :td_issue_not_found}, fn dir, _acc ->
-        case Cli.list_json(dir, ids: [issue_id], include_closed: true) do
+        case cli_module().list_json(dir, ids: [issue_id], include_closed: true) do
           {:ok, [_one | _]} -> {:halt, {:ok, dir}}
           _ -> {:cont, {:error, :td_issue_not_found}}
         end
