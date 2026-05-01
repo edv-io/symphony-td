@@ -14,20 +14,28 @@ workflow is configured for td (`tracker.kind: td` in `WORKFLOW.md`).
 ## Primary tool
 
 Symphony exposes a `td_cli` client tool that runs an allowlisted subset of the
-`td` CLI against the project that owns the current issue. The tool reuses
-Symphony's configured project list — you do not pass paths from the agent unless
-you have a specific reason to override.
+`td` CLI against the project that owns the current issue. Symphony locates the
+project via fan-out across `tracker.projects` — the agent does not choose the
+directory and cannot escape the configured scope.
 
-Tool input:
+Tool input shape:
 
 ```json
 {
   "subcommand": "comment",
   "issue_id": "td-2c2676",
-  "args": ["body of the comment"],
-  "project_dir": null
+  "body": "free-text body — used by comment / log / block",
+  "handoff": {
+    "done": ["string", ...],
+    "remaining": ["string", ...],
+    "decision": ["string", ...],
+    "uncertain": ["string", ...]
+  }
 }
 ```
+
+Only `subcommand` and `issue_id` are required. `body` and `handoff` are used
+only when the subcommand consumes them.
 
 Tool behavior:
 
@@ -35,12 +43,12 @@ Tool behavior:
 - `subcommand` MUST be one of:
   `start`, `unstart`, `review`, `approve`, `reject`,
   `done`, `close`, `comment`, `handoff`, `log`, `block`, `unblock`.
-- Destructive operations (`delete`, `restore`, `update`) are not exposed and
-  will be rejected by the dispatcher.
-- `project_dir` defaults to fan-out lookup across configured projects. Only
-  set it when you have a specific path to scope the call.
-- A non-zero td exit code is reported as an `error.message` with the captured
+- Destructive operations (`delete`, `restore`, `update`) are not exposed.
+- `issue_id` must match `[A-Za-z0-9_-]{1,64}` and not start with `-`.
+- A non-zero td exit code is reported as an `error.message` with captured
   stdout/stderr; treat that as a failed write.
+- The td CLI is invoked under a 30-second timeout. A hung td process becomes
+  `td_cli_timeout` rather than blocking your turn forever.
 
 ## Common workflows
 
@@ -52,7 +60,7 @@ Append a progress note as the agent works:
 {
   "subcommand": "comment",
   "issue_id": "td-2c2676",
-  "args": ["Reproduced the bug locally; root cause is in src/foo.ex line 42."]
+  "body": "Reproduced the bug locally; root cause is in src/foo.ex line 42."
 }
 ```
 
@@ -64,8 +72,8 @@ When the implementation is complete and you want the human to verify:
 { "subcommand": "review", "issue_id": "td-2c2676" }
 ```
 
-Then leave a single comment summarizing what was done. The orchestrator will
-stop when the issue moves to a non-active state.
+Then leave a single comment summarizing what was done. The orchestrator stops
+when the issue moves to a non-active state.
 
 ### Close work
 
@@ -77,7 +85,8 @@ mark the issue done directly (no review):
 ```
 
 td requires a self-close exception when the closer is also the implementer;
-Symphony adds `--self-close-exception symphony` automatically on `done`/`close`.
+Symphony adds `--self-close-exception symphony` automatically on `done`/`close`
+(internally — agents do not pass that flag).
 
 ### Capture handoff state
 
@@ -88,13 +97,12 @@ what remains so a future continuation has structured context:
 {
   "subcommand": "handoff",
   "issue_id": "td-2c2676",
-  "args": [
-    "--done", "Wrote the adapter",
-    "--done", "Added unit tests",
-    "--remaining", "Wire the dynamic tool",
-    "--decision", "Used fan-out instead of an in-memory cache",
-    "--uncertain", "Whether td-all section parsing handles symlinks"
-  ]
+  "handoff": {
+    "done": ["Wrote the adapter", "Added unit tests"],
+    "remaining": ["Wire the dynamic tool"],
+    "decision": ["Used fan-out instead of an in-memory cache"],
+    "uncertain": ["Whether td-all section parsing handles symlinks"]
+  }
 }
 ```
 
@@ -104,7 +112,7 @@ what remains so a future continuation has structured context:
 issue:
 
 ```json
-{ "subcommand": "log", "issue_id": "td-2c2676", "args": ["checked CI; green"] }
+{ "subcommand": "log", "issue_id": "td-2c2676", "body": "checked CI; green" }
 ```
 
 ### Mark blocked
@@ -115,9 +123,12 @@ When external input is required:
 {
   "subcommand": "block",
   "issue_id": "td-2c2676",
-  "args": ["-m", "Waiting on access to the staging cluster."]
+  "body": "Waiting on access to the staging cluster."
 }
 ```
+
+(Symphony emits `td block <id> -m <body>` from this; the body is never a
+freestanding argv element.)
 
 ## Tips
 
@@ -127,5 +138,5 @@ When external input is required:
 - Prefer `review` over `done` unless the workflow's `terminal_states` makes
   `closed` the agent's success state.
 - If you need to read issue state you already received in the prompt, don't
-  call `td_cli` for `show` — it's a write tool. Use the issue context Symphony
-  injected into your prompt.
+  call `td_cli` — it's a write tool. Use the issue context Symphony injected
+  into your prompt.

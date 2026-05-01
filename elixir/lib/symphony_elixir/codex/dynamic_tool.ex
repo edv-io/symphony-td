@@ -39,10 +39,18 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   @td_cli_description """
   Run an allowlisted `td` CLI command against the project that owns the current issue.
 
-  Allowed subcommands: comment (add a comment), start, unstart, review, approve, reject,
-  done (close), handoff (record progress), log (append note), block, unblock.
+  Symphony locates the issue's project via fan-out across the configured `tracker.projects`;
+  the agent does not choose the project directory.
 
-  Destructive operations (delete, restore, update) are not exposed.
+  Allowed subcommands: comment, start, unstart, review, approve, reject, done, close,
+  handoff, log, block, unblock. Destructive operations (delete, restore, update) are not exposed.
+
+  Subcommand argument shape:
+    - `comment`, `log`: pass the body via `body` (string).
+    - `block`: pass an optional reason via `body` (becomes `-m <body>`).
+    - `handoff`: pass `handoff: { done: [...], remaining: [...], decision: [...], uncertain: [...] }`.
+      Each list element becomes a `--<flag> <value>` pair.
+    - All other subcommands take no payload — `body` and `handoff` are ignored.
   """
 
   @impl_subcommands TdCli.allowed_write_subcommands()
@@ -61,17 +69,27 @@ defmodule SymphonyElixir.Codex.DynamicTool do
         "type" => "string",
         "description" => "td issue id (e.g. td-2c2676) to operate on."
       },
-      "project_dir" => %{
+      "body" => %{
         "type" => ["string", "null"],
-        "description" => "Optional project directory. Defaults to fan-out lookup against the configured projects."
+        "description" => "Comment body for `comment`, log line for `log`, or block reason for `block`. Required for those subcommands; ignored for others."
       },
-      "args" => %{
-        "type" => ["array", "null"],
-        "items" => %{"type" => "string"},
-        "description" => "Optional extra positional arguments. The first arg is the comment body for `comment`, the message for `block`, etc."
+      "handoff" => %{
+        "type" => ["object", "null"],
+        "additionalProperties" => false,
+        "description" => "Structured handoff fields used only when subcommand is `handoff`. Each key is a list of free-text strings.",
+        "properties" => %{
+          "done" => %{"type" => "array", "items" => %{"type" => "string"}},
+          "remaining" => %{"type" => "array", "items" => %{"type" => "string"}},
+          "decision" => %{"type" => "array", "items" => %{"type" => "string"}},
+          "uncertain" => %{"type" => "array", "items" => %{"type" => "string"}}
+        }
       }
     }
   }
+
+  @no_arg_subcommands ~w(start unstart review approve reject done close unblock)
+  @body_subcommands ~w(comment log)
+  @handoff_flags ~w(done remaining decision uncertain)
 
   @spec execute(String.t() | nil, term(), keyword()) :: map()
   def execute(tool, arguments, opts \\ []) do
@@ -152,9 +170,10 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     td_runner = Keyword.get(opts, :td_runner, &TdCli.write/4)
     td_lister = Keyword.get(opts, :td_lister, &TdCli.list_json/2)
 
-    with {:ok, subcommand, issue_id, project_dir, args} <- normalize_td_arguments(arguments),
-         {:ok, dir} <- resolve_td_project_dir(project_dir, issue_id, td_lister),
-         :ok <- td_runner.(dir, subcommand, issue_id, args) do
+    with {:ok, subcommand, issue_id, body, handoff} <- normalize_td_arguments(arguments),
+         {:ok, td_args} <- build_td_args(subcommand, body, handoff),
+         {:ok, dir} <- resolve_td_project_dir(issue_id, td_lister),
+         :ok <- td_runner.(dir, subcommand, issue_id, td_args) do
       success_payload =
         Jason.encode!(
           %{
@@ -176,40 +195,76 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp normalize_td_arguments(arguments) when is_map(arguments) do
     with {:ok, subcommand} <- normalize_required_string(arguments, "subcommand"),
          {:ok, issue_id} <- normalize_required_string(arguments, "issue_id") do
-      project_dir = optional_string(arguments, "project_dir")
-      args = optional_string_array(arguments, "args")
+      body = optional_string(arguments, "body")
+      handoff = optional_handoff_payload(arguments)
 
       cond do
         subcommand not in @impl_subcommands ->
           {:error, {:td_disallowed_subcommand, subcommand}}
 
+        not valid_issue_id?(issue_id) ->
+          {:error, {:td_invalid_issue_id, issue_id}}
+
         true ->
-          {:ok, subcommand, issue_id, project_dir, args}
+          {:ok, subcommand, issue_id, body, handoff}
       end
     end
   end
 
   defp normalize_td_arguments(_arguments), do: {:error, :td_invalid_arguments}
 
-  defp resolve_td_project_dir(nil, issue_id, td_lister) do
-    tracker = Config.settings!().tracker
-    dirs = configured_td_dirs(tracker)
+  # Build the exact CLI args list per allowlisted subcommand. Only Symphony's
+  # own values can produce flags — agent inputs are restricted to free-text
+  # bodies and the four handoff fields. No agent string is ever passed as a
+  # standalone argv element when it could be interpreted as a flag.
+  defp build_td_args("comment", body, _) when is_binary(body) and body != "", do: {:ok, [body]}
+  defp build_td_args("log", body, _) when is_binary(body) and body != "", do: {:ok, [body]}
 
-    Enum.reduce_while(dirs, {:error, :td_issue_not_found}, fn dir, _acc ->
-      case td_lister.(dir, ids: [issue_id], include_closed: true) do
-        {:ok, [_one | _]} -> {:halt, {:ok, dir}}
-        _ -> {:cont, {:error, :td_issue_not_found}}
-      end
+  defp build_td_args("block", body, _) when is_binary(body) and body != "" do
+    {:ok, ["-m", body]}
+  end
+
+  defp build_td_args("block", _, _), do: {:ok, []}
+
+  defp build_td_args("handoff", _body, %{} = handoff) do
+    {:ok, build_handoff_args(handoff)}
+  end
+
+  defp build_td_args("handoff", _body, _), do: {:ok, []}
+
+  defp build_td_args(sub, _, _) when sub in @no_arg_subcommands, do: {:ok, []}
+
+  defp build_td_args(sub, _, _) when sub in @body_subcommands do
+    {:error, {:td_missing_body, sub}}
+  end
+
+  defp build_td_args(sub, _, _), do: {:error, {:td_disallowed_subcommand, sub}}
+
+  defp build_handoff_args(handoff) when is_map(handoff) do
+    Enum.flat_map(@handoff_flags, fn flag ->
+      values = handoff[flag] || handoff[String.to_atom(flag)] || []
+
+      values
+      |> List.wrap()
+      |> Enum.filter(&is_binary/1)
+      |> Enum.flat_map(fn value -> ["--#{flag}", value] end)
     end)
   end
 
-  defp resolve_td_project_dir(dir, _issue_id, _td_lister) when is_binary(dir) and dir != "" do
-    {:ok, expand_home(dir)}
-  end
+  defp resolve_td_project_dir(issue_id, td_lister) do
+    tracker = Config.settings!().tracker
+    dirs = configured_td_dirs(tracker)
 
-  defp configured_td_dirs(%{projects: projects, scope: "all"} = _tracker)
-       when is_list(projects) and projects != [] do
-    Enum.map(projects, &expand_home/1)
+    if dirs == [] do
+      {:error, :td_no_projects_configured}
+    else
+      Enum.reduce_while(dirs, {:error, :td_issue_not_found}, fn dir, _acc ->
+        case td_lister.(dir, ids: [issue_id], include_closed: true) do
+          {:ok, [_one | _]} -> {:halt, {:ok, dir}}
+          _ -> {:cont, {:error, :td_issue_not_found}}
+        end
+      end)
+    end
   end
 
   defp configured_td_dirs(%{projects: projects})
@@ -225,6 +280,18 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   end
 
   defp configured_td_dirs(_), do: []
+
+  # td issue ids look like td-<hex>. Reject anything that could be argv-injected
+  # (whitespace, leading dashes, semicolons, etc).
+  defp valid_issue_id?(id) when is_binary(id) do
+    Regex.match?(~r/\A[A-Za-z0-9_\-]{1,64}\z/, id) and not String.starts_with?(id, "-")
+  end
+
+  defp valid_issue_id?(_), do: false
+
+  defp optional_handoff_payload(%{"handoff" => map}) when is_map(map), do: map
+  defp optional_handoff_payload(%{handoff: map}) when is_map(map), do: map
+  defp optional_handoff_payload(_), do: %{}
 
   defp expand_home(nil), do: nil
 
@@ -253,13 +320,6 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     case Map.get(map, key) do
       value when is_binary(value) and value != "" -> value
       _ -> nil
-    end
-  end
-
-  defp optional_string_array(map, key) do
-    case Map.get(map, key) do
-      list when is_list(list) -> Enum.map(list, &to_string/1)
-      _ -> []
     end
   end
 
@@ -407,6 +467,32 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     %{
       "error" => %{
         "message" => "Could not find this td issue in any configured project. Verify the id and `tracker.projects` config."
+      }
+    }
+  end
+
+  defp tool_error_payload(:td_no_projects_configured) do
+    %{
+      "error" => %{
+        "message" => "No td projects are configured. Set `tracker.projects` or `tracker.scope: all` in WORKFLOW.md."
+      }
+    }
+  end
+
+  defp tool_error_payload({:td_invalid_issue_id, issue_id}) do
+    %{
+      "error" => %{
+        "message" => "`td_cli.issue_id` must be a td identifier (alphanumeric/underscore/hyphen, not flag-like).",
+        "issue_id" => issue_id
+      }
+    }
+  end
+
+  defp tool_error_payload({:td_missing_body, subcommand}) do
+    %{
+      "error" => %{
+        "message" => "`td_cli` subcommand `#{subcommand}` requires a non-empty `body`.",
+        "subcommand" => subcommand
       }
     }
   end

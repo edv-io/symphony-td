@@ -95,18 +95,34 @@ defmodule SymphonyElixir.Td.Cli do
 
   defp run(args, binary \\ nil) do
     bin = binary || td_binary()
+    timeout_ms = timeout_ms()
 
-    try do
-      case System.cmd(bin, args, stderr_to_stdout: true) do
-        {output, 0} ->
-          {:ok, output}
+    task =
+      Task.async(fn ->
+        try do
+          {:result, System.cmd(bin, args, stderr_to_stdout: true)}
+        rescue
+          ErlangError -> {:unavailable, bin}
+        end
+      end)
 
-        {output, status} ->
-          Logger.warning("td CLI exited non-zero binary=#{bin} status=#{status} args=#{inspect(args)} output=#{inspect(output)}")
-          {:error, {:td_cli_error, status, output}}
-      end
-    rescue
-      ErlangError -> {:error, {:td_cli_unavailable, bin}}
+    case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, {:result, {output, 0}}} ->
+        {:ok, output}
+
+      {:ok, {:result, {output, status}}} ->
+        Logger.warning("td CLI exited non-zero binary=#{bin} status=#{status} args=#{inspect(args)} output=#{inspect(output)}")
+        {:error, {:td_cli_error, status, output}}
+
+      {:ok, {:unavailable, ^bin}} ->
+        {:error, {:td_cli_unavailable, bin}}
+
+      nil ->
+        Logger.warning("td CLI timed out binary=#{bin} args=#{inspect(args)} timeout_ms=#{timeout_ms}")
+        {:error, {:td_cli_timeout, timeout_ms}}
+
+      {:exit, reason} ->
+        {:error, {:td_cli_crashed, reason}}
     end
   end
 
@@ -170,4 +186,5 @@ defmodule SymphonyElixir.Td.Cli do
 
   defp td_binary, do: Application.get_env(:symphony_elixir, :td_binary, "td")
   defp td_all_binary, do: Application.get_env(:symphony_elixir, :td_all_binary, "td-all")
+  defp timeout_ms, do: Application.get_env(:symphony_elixir, :td_cli_timeout_ms, 30_000)
 end
