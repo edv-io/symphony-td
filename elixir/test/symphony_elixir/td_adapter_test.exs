@@ -142,6 +142,15 @@ defmodule SymphonyElixir.Td.AdapterTest do
       assert opts[:include_closed] == true
       assert opts[:statuses] == ["closed"]
     end
+
+    test "passes an explicit limit to avoid td list's default row cap" do
+      Process.put({FakeCli, "/work/repo-a"}, [])
+      Process.put({FakeCli, "/work/repo-b"}, [])
+
+      assert {:ok, []} = Adapter.fetch_issues_by_states(["closed"])
+      assert_received {:list_json_called, "/work/repo-a", opts}
+      assert opts[:limit] == 500
+    end
   end
 
   describe "fetch_issue_states_by_ids/1" do
