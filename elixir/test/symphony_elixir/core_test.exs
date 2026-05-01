@@ -350,6 +350,106 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "terminal workspace cleanup resolves existing workspace dirs by issue identifier" do
+    terminal_issue = %Issue{
+      id: "issue-closed-id",
+      identifier: "td-closed",
+      state: "Closed",
+      title: "Done",
+      description: "Terminal issue"
+    }
+
+    active_issue = %Issue{
+      id: "issue-active-id",
+      identifier: "td-active",
+      state: "In Progress",
+      title: "Active",
+      description: "Still active"
+    }
+
+    test_pid = self()
+
+    workspace_lister = fn ->
+      {:ok, ["td-closed", "td-active"]}
+    end
+
+    issue_fetcher = fn issue_ids ->
+      send(test_pid, {:workspace_issue_lookup, issue_ids})
+      {:ok, [terminal_issue, active_issue]}
+    end
+
+    cleanup_fun = fn identifier ->
+      send(test_pid, {:workspace_cleanup, identifier})
+      :ok
+    end
+
+    assert :ok =
+             Orchestrator.terminal_workspace_cleanup_for_test(
+               workspace_lister,
+               issue_fetcher,
+               cleanup_fun
+             )
+
+    assert_receive {:workspace_issue_lookup, ["td-closed", "td-active"]}
+    assert_receive {:workspace_cleanup, "td-closed"}
+    refute_receive {:workspace_cleanup, "td-active"}, 50
+  end
+
+  test "poll tick removes an existing workspace after a memory issue becomes terminal" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-terminal-workspace-tick-#{System.unique_integer([:positive])}"
+      )
+
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    issue_id = "issue-closed-id"
+    issue_identifier = "td-closed"
+    workspace = Path.join(test_root, issue_identifier)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: test_root,
+        tracker_active_states: ["Todo", "In Progress", "In Review"],
+        tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate"],
+        poll_interval_ms: 30_000
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+
+      orchestrator_name = Module.concat(__MODULE__, :TerminalWorkspaceTickOrchestrator)
+      {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+      on_exit(fn ->
+        restore_app_env(:memory_tracker_issues, previous_memory_issues)
+
+        if Process.alive?(pid) do
+          Process.exit(pid, :normal)
+        end
+      end)
+
+      File.mkdir_p!(workspace)
+      assert File.dir?(workspace)
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [
+        %Issue{
+          id: issue_id,
+          identifier: issue_identifier,
+          state: "Closed",
+          title: "Closed task",
+          description: "Workspace should be removed"
+        }
+      ])
+
+      send(pid, :tick)
+      assert_eventually(fn -> refute File.exists?(workspace) end)
+    after
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      File.rm_rf(test_root)
+    end
+  end
+
   test "missing running issues stop active agents without cleaning the workspace" do
     test_root =
       Path.join(
@@ -756,6 +856,18 @@ defmodule SymphonyElixir.CoreTest do
     assert remaining_ms >= min_remaining_ms
     assert remaining_ms <= max_remaining_ms
   end
+
+  defp assert_eventually(fun, attempts \\ 20)
+
+  defp assert_eventually(fun, attempts) when attempts > 0 do
+    fun.()
+  rescue
+    ExUnit.AssertionError ->
+      Process.sleep(25)
+      assert_eventually(fun, attempts - 1)
+  end
+
+  defp assert_eventually(_fun, 0), do: flunk("condition not met in time")
 
   defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
   defp restore_app_env(key, value), do: Application.put_env(:symphony_elixir, key, value)

@@ -55,8 +55,8 @@ defmodule SymphonyElixir.Linear.Client do
   """
 
   @query_by_ids """
-  query SymphonyLinearIssuesById($ids: [ID!]!, $first: Int!, $relationFirst: Int!) {
-    issues(filter: {id: {in: $ids}}, first: $first) {
+  query SymphonyLinearIssuesById($ids: [ID!]!, $identifiers: [String!]!, $first: Int!, $relationFirst: Int!) {
+    issues(filter: {or: [{id: {in: $ids}}, {identifier: {in: $identifiers}}]}, first: $first) {
       nodes {
         id
         identifier
@@ -293,6 +293,7 @@ defmodule SymphonyElixir.Linear.Client do
 
     case graphql_fun.(@query_by_ids, %{
            ids: batch_ids,
+           identifiers: batch_ids,
            first: length(batch_ids),
            relationFirst: @issue_page_size
          }) do
@@ -318,8 +319,11 @@ defmodule SymphonyElixir.Linear.Client do
     fallback_index = map_size(issue_order_index)
 
     Enum.sort_by(issues, fn
-      %Issue{id: issue_id} -> Map.get(issue_order_index, issue_id, fallback_index)
-      _ -> fallback_index
+      %Issue{id: issue_id, identifier: identifier} ->
+        min(Map.get(issue_order_index, issue_id, fallback_index), Map.get(issue_order_index, identifier, fallback_index))
+
+      _ ->
+        fallback_index
     end)
   end
 

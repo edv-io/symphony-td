@@ -30,8 +30,8 @@ defmodule SymphonyElixir.Tracker.Memory do
     wanted_ids = MapSet.new(issue_ids)
 
     {:ok,
-     Enum.filter(issue_entries(), fn %Issue{id: id} ->
-       MapSet.member?(wanted_ids, id)
+     Enum.filter(issue_entries(), fn %Issue{id: id, identifier: identifier} ->
+       MapSet.member?(wanted_ids, id) or MapSet.member?(wanted_ids, identifier)
      end)}
   end
 

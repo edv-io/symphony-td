@@ -279,6 +279,28 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "workspace listing returns issue-like workspace directories only" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-list-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      File.mkdir_p!(Path.join(workspace_root, "td-fb9036"))
+      File.mkdir_p!(Path.join(workspace_root, "MT-101"))
+      File.mkdir_p!(Path.join(workspace_root, "scratch"))
+      File.write!(Path.join(workspace_root, "td-file"), "not a workspace")
+      File.mkdir_p!(Path.join(workspace_root, ".git"))
+
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      assert {:ok, ["MT-101", "td-fb9036"]} = Workspace.list_workspaces()
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
   test "workspace cleanup handles missing workspace root" do
     missing_root =
       Path.join(
@@ -423,10 +445,56 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert Enum.map(issues, & &1.id) == issue_ids
 
-    assert_receive {:fetch_issue_states_page, query, %{ids: ^first_batch_ids, first: 50, relationFirst: 50}}
-    assert query =~ "SymphonyLinearIssuesById"
+    assert_receive {:fetch_issue_states_page, query, %{ids: ^first_batch_ids, identifiers: ^first_batch_ids, first: 50, relationFirst: 50}}
 
-    assert_receive {:fetch_issue_states_page, ^query, %{ids: ^second_batch_ids, first: 5, relationFirst: 50}}
+    assert query =~ "SymphonyLinearIssuesById"
+    assert query =~ "identifier"
+
+    assert_receive {:fetch_issue_states_page, ^query, %{ids: ^second_batch_ids, identifiers: ^second_batch_ids, first: 5, relationFirst: 50}}
+  end
+
+  test "linear client issue state fetch accepts workspace identifiers" do
+    issue_ids = ["MT-2", "MT-1"]
+
+    graphql_fun = fn query, variables ->
+      send(self(), {:fetch_issue_states_page, query, variables})
+
+      {:ok,
+       %{
+         "data" => %{
+           "issues" => %{
+             "nodes" => [
+               %{
+                 "id" => "linear-id-1",
+                 "identifier" => "MT-1",
+                 "title" => "Issue 1",
+                 "description" => "Description 1",
+                 "state" => %{"name" => "Closed"},
+                 "labels" => %{"nodes" => []},
+                 "inverseRelations" => %{"nodes" => []}
+               },
+               %{
+                 "id" => "linear-id-2",
+                 "identifier" => "MT-2",
+                 "title" => "Issue 2",
+                 "description" => "Description 2",
+                 "state" => %{"name" => "Closed"},
+                 "labels" => %{"nodes" => []},
+                 "inverseRelations" => %{"nodes" => []}
+               }
+             ]
+           }
+         }
+       }}
+    end
+
+    assert {:ok, issues} = Client.fetch_issue_states_by_ids_for_test(issue_ids, graphql_fun)
+
+    assert Enum.map(issues, & &1.identifier) == issue_ids
+
+    assert_receive {:fetch_issue_states_page, query, %{ids: ^issue_ids, identifiers: ^issue_ids, first: 2, relationFirst: 50}}
+
+    assert query =~ "identifier"
   end
 
   test "linear client logs response bodies for non-200 graphql responses" do
