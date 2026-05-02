@@ -47,8 +47,18 @@ defmodule SymphonyElixirWeb.Layouts do
 
   @spec app(map()) :: Phoenix.LiveView.Rendered.t()
   def app(assigns) do
+    assigns = assign_new(assigns, :active_tab, fn -> :orchestrator end)
+
     ~H"""
     <main class="app-shell">
+      <nav class="dashboard-tabs" aria-label="Dashboard views">
+        <a class={["dashboard-tab", @active_tab == :orchestrator && "dashboard-tab-active"]} href="/">
+          Orchestrator
+        </a>
+        <a class={["dashboard-tab", @active_tab == :kanban && "dashboard-tab-active"]} href="/kanban">
+          Kanban
+        </a>
+      </nav>
       {@inner_content}
     </main>
     """
