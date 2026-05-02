@@ -5,8 +5,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
+  alias SymphonyElixir.Config
+  alias SymphonyElixir.Td.Adapter, as: TdAdapter
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
+
   @runtime_tick_ms 1_000
+  @kanban_states ~w(open in_progress in_review blocked)
+  @closed_state "closed"
+  @closed_limit 20
 
   @impl true
   def mount(_params, _session, socket) do
@@ -14,6 +20,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
       socket
       |> assign(:payload, load_payload())
       |> assign(:now, DateTime.utc_now())
+      |> assign(:active_tab, :orchestrator)
+      |> assign(:kanban, nil)
+      |> assign(:symphony_only, false)
+      |> assign(:show_closed, false)
 
     if connected?(socket) do
       :ok = ObservabilityPubSub.subscribe()
@@ -21,6 +31,22 @@ defmodule SymphonyElixirWeb.DashboardLive do
     end
 
     {:ok, socket}
+  end
+
+  @impl true
+  def handle_params(_params, _uri, socket) do
+    active_tab =
+      case socket.assigns.live_action do
+        :kanban -> :kanban
+        _ -> :orchestrator
+      end
+
+    socket =
+      socket
+      |> assign(:active_tab, active_tab)
+      |> maybe_refresh_kanban()
+
+    {:noreply, socket}
   end
 
   @impl true
@@ -34,12 +60,41 @@ defmodule SymphonyElixirWeb.DashboardLive do
     {:noreply,
      socket
      |> assign(:payload, load_payload())
-     |> assign(:now, DateTime.utc_now())}
+     |> assign(:now, DateTime.utc_now())
+     |> maybe_refresh_kanban()}
+  end
+
+  @impl true
+  def handle_event("refresh_kanban", _params, socket) do
+    {:noreply, refresh_kanban(socket)}
+  end
+
+  @impl true
+  def handle_event("toggle_symphony_only", _params, socket) do
+    socket =
+      socket
+      |> assign(:symphony_only, !socket.assigns.symphony_only)
+      |> refresh_kanban()
+
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("toggle_closed", _params, socket) do
+    socket =
+      socket
+      |> assign(:show_closed, !socket.assigns.show_closed)
+      |> refresh_kanban()
+
+    {:noreply, socket}
   end
 
   @impl true
   def render(assigns) do
     ~H"""
+    <%= if @active_tab == :kanban do %>
+      <.kanban_view kanban={@kanban} symphony_only={@symphony_only} show_closed={@show_closed} />
+    <% else %>
     <section class="dashboard-shell">
       <header class="hero-card">
         <div class="hero-grid">
@@ -246,11 +301,192 @@ defmodule SymphonyElixirWeb.DashboardLive do
         </section>
       <% end %>
     </section>
+    <% end %>
+    """
+  end
+
+  defp kanban_view(assigns) do
+    ~H"""
+    <section class="dashboard-shell">
+      <header class="hero-card">
+        <div class="hero-grid">
+          <div>
+            <p class="eyebrow">
+              td Queue
+            </p>
+            <h1 class="hero-title">
+              Kanban Board
+            </h1>
+            <p class="hero-copy">
+              Backlog state across configured td projects for the active Symphony workflow.
+            </p>
+          </div>
+
+          <div class="kanban-actions">
+            <button type="button" class="secondary" phx-click="refresh_kanban">
+              Refresh
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <%= cond do %>
+        <% is_nil(@kanban) -> %>
+          <section class="section-card">
+            <p class="empty-state">Loading kanban board.</p>
+          </section>
+        <% @kanban.available? == false -> %>
+          <section class="section-card">
+            <div class="section-header">
+              <div>
+                <h2 class="section-title">Kanban unavailable</h2>
+                <p class="section-copy"><%= @kanban.message %></p>
+              </div>
+            </div>
+          </section>
+        <% @kanban.error -> %>
+          <section class="error-card">
+            <h2 class="error-title">
+              Kanban unavailable
+            </h2>
+            <p class="error-copy">
+              <strong><%= @kanban.error.code %>:</strong> <%= @kanban.error.message %>
+            </p>
+          </section>
+        <% true -> %>
+          <section class="section-card">
+            <div class="section-header">
+              <div>
+                <h2 class="section-title">td tasks</h2>
+                <p class="section-copy numeric">
+                  Updated <%= @kanban.generated_at %>
+                </p>
+              </div>
+
+              <div class="kanban-toggle-group">
+                <button
+                  type="button"
+                  class={["secondary", @symphony_only && "toggle-active"]}
+                  aria-pressed={to_string(@symphony_only)}
+                  phx-click="toggle_symphony_only"
+                >
+                  Symphony-labelled only
+                </button>
+                <button
+                  type="button"
+                  class={["secondary", @show_closed && "toggle-active"]}
+                  aria-pressed={to_string(@show_closed)}
+                  phx-click="toggle_closed"
+                >
+                  Show closed (last <%= @kanban.closed_limit %>)
+                </button>
+              </div>
+            </div>
+
+            <div class="kanban-board">
+              <section
+                :for={state <- @kanban.states}
+                class="kanban-column"
+                aria-labelledby={"kanban-column-#{state}"}
+              >
+                <% column = Map.fetch!(@kanban.columns, state) %>
+                <header class="kanban-column-header">
+                  <h3 id={"kanban-column-#{state}"} class="kanban-column-title">
+                    <%= column.title %>
+                  </h3>
+                  <span class="kanban-count numeric"><%= column.count %></span>
+                </header>
+
+                <div class="kanban-card-list">
+                  <%= if column.cards == [] do %>
+                    <p class="empty-state kanban-empty">No <%= state %> tasks.</p>
+                  <% else %>
+                    <a
+                      :for={card <- column.cards}
+                      class="kanban-card"
+                      href={card.detail_url}
+                      aria-label={card.aria_label}
+                      title={card.aria_label}
+                    >
+                      <div class="kanban-card-topline">
+                        <span class="issue-id"><%= card.id %></span>
+                        <span class={"priority-chip priority-#{String.downcase(card.priority)}"}>
+                          <%= card.priority %>
+                        </span>
+                      </div>
+                      <p class="kanban-card-title"><%= card.title %></p>
+
+                      <div class="kanban-chip-row">
+                        <span :if={card.project} class="project-chip"><%= card.project %></span>
+                        <span :for={label <- card.labels} class="label-chip"><%= label %></span>
+                      </div>
+                    </a>
+                  <% end %>
+                </div>
+              </section>
+            </div>
+          </section>
+      <% end %>
+    </section>
     """
   end
 
   defp load_payload do
     Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
+  end
+
+  defp maybe_refresh_kanban(%{assigns: %{active_tab: :kanban}} = socket), do: refresh_kanban(socket)
+  defp maybe_refresh_kanban(socket), do: socket
+
+  defp refresh_kanban(socket) do
+    assign(
+      socket,
+      :kanban,
+      load_kanban(socket.assigns.symphony_only, socket.assigns.show_closed)
+    )
+  end
+
+  defp load_kanban(symphony_only?, show_closed?) do
+    tracker = Config.settings!().tracker
+
+    if tracker.kind != "td" do
+      %{
+        available?: false,
+        message: "Kanban is only available when tracker.kind is td.",
+        error: nil
+      }
+    else
+      states = if show_closed?, do: @kanban_states ++ [@closed_state], else: @kanban_states
+
+      case TdAdapter.fetch_issues_by_states(states) do
+        {:ok, issues} ->
+          issues
+          |> Presenter.kanban_payload(
+            filter_label: tracker.filter_label,
+            symphony_only?: symphony_only?,
+            show_closed?: show_closed?,
+            closed_limit: @closed_limit,
+            projects: tracker.projects || []
+          )
+          |> Map.merge(%{available?: true, error: nil})
+
+        {:error, reason} ->
+          %{
+            available?: true,
+            error: %{code: "td_fetch_failed", message: inspect(reason)},
+            states: states,
+            columns: %{}
+          }
+      end
+    end
+  rescue
+    error ->
+      %{
+        available?: true,
+        error: %{code: "kanban_load_failed", message: Exception.message(error)},
+        states: [],
+        columns: %{}
+      }
   end
 
   defp orchestrator do
