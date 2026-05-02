@@ -14,7 +14,8 @@ defmodule SymphonyElixir.Td.Cli do
   @type project_dir :: String.t()
   @type issue_id :: String.t()
 
-  @allowed_write_subcommands ~w(start unstart review approve reject done close comment handoff log block unblock)
+  @allowed_agent_write_subcommands ~w(start unstart review approve reject done close comment handoff log block unblock)
+  @allowed_write_subcommands @allowed_agent_write_subcommands ++ ~w(update edit)
 
   @doc """
   List issues in `project_dir` as decoded JSON.
@@ -91,7 +92,7 @@ defmodule SymphonyElixir.Td.Cli do
   tool so the schema and the validator stay in sync.
   """
   @spec allowed_write_subcommands() :: [String.t()]
-  def allowed_write_subcommands, do: @allowed_write_subcommands
+  def allowed_write_subcommands, do: @allowed_agent_write_subcommands
 
   @doc """
   Returns true when a string is safe to pass to td as a flag value or positional

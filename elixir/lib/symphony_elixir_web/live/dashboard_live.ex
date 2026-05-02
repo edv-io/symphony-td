@@ -5,12 +5,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
-  alias SymphonyElixir.Config
+  alias SymphonyElixir.{Config, Tracker}
   alias SymphonyElixir.Td.Adapter, as: TdAdapter
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
 
   @runtime_tick_ms 1_000
-  @kanban_states ~w(open in_progress in_review blocked)
+  @kanban_query_states ~w(open in_progress in_review blocked)
   @closed_state "closed"
   @closed_limit 20
 
@@ -24,6 +24,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:kanban, nil)
       |> assign(:symphony_only, false)
       |> assign(:show_closed, false)
+      |> assign(:selected_issue_id, nil)
+      |> assign(:selected_issue, nil)
+      |> assign(:kanban_queue_error, nil)
 
     if connected?(socket) do
       :ok = ObservabilityPubSub.subscribe()
@@ -66,7 +69,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   @impl true
   def handle_event("refresh_kanban", _params, socket) do
-    {:noreply, refresh_kanban(socket)}
+    {:noreply, socket |> refresh_kanban() |> refresh_selected_issue()}
   end
 
   @impl true
@@ -75,6 +78,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       socket
       |> assign(:symphony_only, !socket.assigns.symphony_only)
       |> refresh_kanban()
+      |> refresh_selected_issue()
 
     {:noreply, socket}
   end
@@ -85,6 +89,36 @@ defmodule SymphonyElixirWeb.DashboardLive do
       socket
       |> assign(:show_closed, !socket.assigns.show_closed)
       |> refresh_kanban()
+      |> refresh_selected_issue()
+
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("select_issue", %{"id" => issue_id}, socket) do
+    {:noreply, select_issue(socket, issue_id)}
+  end
+
+  @impl true
+  def handle_event("deselect_issue", _params, socket) do
+    {:noreply, assign(socket, selected_issue_id: nil, selected_issue: nil, kanban_queue_error: nil)}
+  end
+
+  @impl true
+  def handle_event("queue_issue", %{"id" => issue_id}, socket) do
+    label = queue_label()
+
+    socket =
+      case Tracker.add_label(issue_id, label) do
+        :ok ->
+          socket
+          |> assign(:kanban_queue_error, nil)
+          |> refresh_kanban()
+          |> select_issue(issue_id)
+
+        {:error, reason} ->
+          assign(socket, :kanban_queue_error, "Could not queue #{issue_id}: #{inspect(reason)}")
+      end
 
     {:noreply, socket}
   end
@@ -93,7 +127,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
   def render(assigns) do
     ~H"""
     <%= if @active_tab == :kanban do %>
-      <.kanban_view kanban={@kanban} symphony_only={@symphony_only} show_closed={@show_closed} />
+      <.kanban_view
+        kanban={@kanban}
+        symphony_only={@symphony_only}
+        show_closed={@show_closed}
+        selected_issue_id={@selected_issue_id}
+        selected_issue={@selected_issue}
+        kanban_queue_error={@kanban_queue_error}
+      />
     <% else %>
     <section class="dashboard-shell">
       <header class="hero-card">
@@ -308,25 +349,23 @@ defmodule SymphonyElixirWeb.DashboardLive do
   defp kanban_view(assigns) do
     ~H"""
     <section class="dashboard-shell">
-      <header class="hero-card">
-        <div class="hero-grid">
-          <div>
-            <p class="eyebrow">
-              td Queue
-            </p>
-            <h1 class="hero-title">
-              Kanban Board
-            </h1>
-            <p class="hero-copy">
-              Backlog state across configured td projects for the active Symphony workflow.
-            </p>
-          </div>
+      <header class="kanban-top-strip">
+        <div>
+          <p class="eyebrow">
+            td Queue
+          </p>
+          <h1 class="kanban-page-title">
+            Kanban Board
+          </h1>
+          <p class="section-copy">
+            Backlog state across configured td projects for the active Symphony workflow.
+          </p>
+        </div>
 
-          <div class="kanban-actions">
-            <button type="button" class="secondary" phx-click="refresh_kanban">
-              Refresh
-            </button>
-          </div>
+        <div class="kanban-actions">
+          <button type="button" class="secondary" phx-click="refresh_kanban">
+            Refresh
+          </button>
         </div>
       </header>
 
@@ -354,8 +393,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </p>
           </section>
         <% true -> %>
-          <section class="section-card">
-            <div class="section-header">
+          <section class="kanban-shell">
+            <header class="kanban-header-strip">
               <div>
                 <h2 class="section-title">td tasks</h2>
                 <p class="section-copy numeric">
@@ -381,49 +420,75 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   Show closed (last <%= @kanban.closed_limit %>)
                 </button>
               </div>
-            </div>
+            </header>
 
-            <div class="kanban-board">
-              <section
-                :for={state <- @kanban.states}
-                class="kanban-column"
-                aria-labelledby={"kanban-column-#{state}"}
-              >
-                <% column = Map.fetch!(@kanban.columns, state) %>
-                <header class="kanban-column-header">
-                  <h3 id={"kanban-column-#{state}"} class="kanban-column-title">
-                    <%= column.title %>
-                  </h3>
-                  <span class="kanban-count numeric"><%= column.count %></span>
-                </header>
+            <p :if={@kanban_queue_error} class="kanban-inline-error"><%= @kanban_queue_error %></p>
 
-                <div class="kanban-card-list">
-                  <%= if column.cards == [] do %>
-                    <p class="empty-state kanban-empty">No <%= state %> tasks.</p>
-                  <% else %>
-                    <a
-                      :for={card <- column.cards}
-                      class="kanban-card"
-                      href={card.detail_url}
-                      aria-label={card.aria_label}
-                      title={card.aria_label}
-                    >
-                      <div class="kanban-card-topline">
-                        <span class="issue-id"><%= card.id %></span>
-                        <span class={"priority-chip priority-#{String.downcase(card.priority)}"}>
-                          <%= card.priority %>
-                        </span>
-                      </div>
-                      <p class="kanban-card-title"><%= card.title %></p>
+            <div class="kanban-workspace">
+              <div class="kanban-board" aria-label="td task columns">
+                <section
+                  :for={state <- @kanban.states}
+                  id={"kanban-column-#{state}-drop"}
+                  class={["kanban-column", state == "ready" && "kanban-column-ready"]}
+                  aria-labelledby={"kanban-column-#{state}"}
+                  phx-hook={if state == "ready", do: "KanbanDropTarget"}
+                >
+                  <% column = Map.fetch!(@kanban.columns, state) %>
+                  <header class="kanban-column-header">
+                    <h3 id={"kanban-column-#{state}"} class="kanban-column-title">
+                      <%= column.title %>
+                    </h3>
+                    <span class="kanban-count numeric"><%= column.count %></span>
+                  </header>
 
-                      <div class="kanban-chip-row">
-                        <span :if={card.project} class="project-chip"><%= card.project %></span>
-                        <span :for={label <- card.labels} class="label-chip"><%= label %></span>
-                      </div>
-                    </a>
-                  <% end %>
-                </div>
-              </section>
+                  <p :if={state == "ready"} class="kanban-drop-hint">Drop Open cards here to queue Symphony.</p>
+
+                  <div class="kanban-card-list">
+                    <%= if column.cards == [] do %>
+                      <p class="empty-state kanban-empty">No <%= column.title %> tasks.</p>
+                    <% else %>
+                      <button
+                        :for={card <- column.cards}
+                        id={"kanban-card-#{card.id}"}
+                        type="button"
+                        class={[
+                          "kanban-card",
+                          @selected_issue_id == card.id && "kanban-card-selected",
+                          state == "open" && "kanban-card-draggable"
+                        ]}
+                        phx-click="select_issue"
+                        phx-value-id={card.id}
+                        phx-hook={if state == "open", do: "KanbanDraggableCard"}
+                        draggable={to_string(state == "open")}
+                        data-issue-id={card.id}
+                        aria-pressed={to_string(@selected_issue_id == card.id)}
+                        aria-label={card.aria_label}
+                        title={card.title}
+                      >
+                        <div class="kanban-card-topline">
+                          <span class="issue-id"><%= card.id %></span>
+                          <span class={"priority-chip priority-#{String.downcase(card.priority)}"}>
+                            <%= card.priority %>
+                          </span>
+                        </div>
+                        <span class="kanban-card-title"><%= card.display_title %></span>
+
+                        <div class="kanban-chip-row">
+                          <span :if={card.project} class="project-chip"><%= card.project %></span>
+                          <span :for={label <- card.labels} class="label-chip"><%= label %></span>
+                          <span :if={card.label_overflow_count > 0} class="label-chip">
+                            +<%= card.label_overflow_count %>
+                          </span>
+                        </div>
+                      </button>
+                    <% end %>
+                  </div>
+                </section>
+              </div>
+
+              <aside class="kanban-preview-pane" aria-live="polite">
+                <.kanban_preview selected_issue={@selected_issue} />
+              </aside>
             </div>
           </section>
       <% end %>
@@ -431,11 +496,111 @@ defmodule SymphonyElixirWeb.DashboardLive do
     """
   end
 
+  defp kanban_preview(%{selected_issue: nil} = assigns) do
+    ~H"""
+    <div class="preview-empty">
+      <p class="eyebrow">Preview</p>
+      <h2 class="preview-title">Select a task</h2>
+      <p class="section-copy">Card details stay here while the board remains visible.</p>
+    </div>
+    """
+  end
+
+  defp kanban_preview(assigns) do
+    ~H"""
+    <div class="preview-content">
+      <header class="preview-header">
+        <div>
+          <p class="eyebrow"><%= @selected_issue.issue_identifier %></p>
+          <h2 class="preview-title"><%= @selected_issue.title %></h2>
+        </div>
+
+        <button type="button" class="subtle-button" phx-click="deselect_issue">Close</button>
+      </header>
+
+      <dl class="preview-meta-grid">
+        <div>
+          <dt>State</dt>
+          <dd><span class={state_badge_class(@selected_issue.state)}><%= @selected_issue.state %></span></dd>
+        </div>
+        <div>
+          <dt>Priority</dt>
+          <dd><span class={"priority-chip priority-#{String.downcase(preview_priority(@selected_issue.priority))}"}><%= preview_priority(@selected_issue.priority) %></span></dd>
+        </div>
+        <div :if={@selected_issue.project_dir}>
+          <dt>Project</dt>
+          <dd class="mono"><%= Path.basename(@selected_issue.project_dir) %></dd>
+        </div>
+        <div :if={@selected_issue.branch_name}>
+          <dt>Branch</dt>
+          <dd class="mono"><%= @selected_issue.branch_name %></dd>
+        </div>
+      </dl>
+
+      <section class="preview-section">
+        <h3>Description</h3>
+        <%= if blank?(@selected_issue.description) do %>
+          <p class="empty-state">No description.</p>
+        <% else %>
+          <div class="preview-markdown">
+            <%= for block <- markdown_blocks(@selected_issue.description) do %>
+              <h4 :if={block.type == :heading}><%= block.text %></h4>
+              <p :if={block.type == :paragraph}><%= block.text %></p>
+              <ul :if={block.type == :list}>
+                <li :for={item <- block.items}><%= item %></li>
+              </ul>
+              <pre :if={block.type == :code} class="code-panel"><%= block.text %></pre>
+            <% end %>
+          </div>
+        <% end %>
+      </section>
+
+      <section class="preview-section">
+        <h3>Labels</h3>
+        <div class="kanban-chip-row">
+          <span :for={label <- @selected_issue.labels} class="label-chip"><%= label %></span>
+          <span :if={@selected_issue.labels == []} class="muted">None</span>
+        </div>
+      </section>
+
+      <section class="preview-section">
+        <h3>Links</h3>
+        <div class="preview-link-list">
+          <a :if={@selected_issue.url} href={@selected_issue.url}>Tracker URL</a>
+          <a :if={@selected_issue.repo_url} href={@selected_issue.repo_url}>Repository URL</a>
+          <a href={"/api/v1/#{@selected_issue.issue_identifier}"}>JSON endpoint</a>
+        </div>
+      </section>
+
+      <section class="preview-section">
+        <h3>Timestamps</h3>
+        <dl class="preview-meta-grid preview-meta-grid-tight">
+          <div>
+            <dt>Created</dt>
+            <dd class="mono"><%= @selected_issue.created_at || "n/a" %></dd>
+          </div>
+          <div>
+            <dt>Updated</dt>
+            <dd class="mono"><%= @selected_issue.updated_at || "n/a" %></dd>
+          </div>
+        </dl>
+      </section>
+
+      <details class="preview-raw">
+        <summary>Raw JSON</summary>
+        <pre class="code-panel"><%= pretty_json(@selected_issue) %></pre>
+      </details>
+    </div>
+    """
+  end
+
   defp load_payload do
     Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
   end
 
-  defp maybe_refresh_kanban(%{assigns: %{active_tab: :kanban}} = socket), do: refresh_kanban(socket)
+  defp maybe_refresh_kanban(%{assigns: %{active_tab: :kanban}} = socket),
+    do: refresh_kanban(socket)
+
   defp maybe_refresh_kanban(socket), do: socket
 
   defp refresh_kanban(socket) do
@@ -456,7 +621,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
         error: nil
       }
     else
-      states = if show_closed?, do: @kanban_states ++ [@closed_state], else: @kanban_states
+      states =
+        if show_closed?, do: @kanban_query_states ++ [@closed_state], else: @kanban_query_states
 
       case TdAdapter.fetch_issues_by_states(states) do
         {:ok, issues} ->
@@ -489,6 +655,42 @@ defmodule SymphonyElixirWeb.DashboardLive do
       }
   end
 
+  defp select_issue(socket, issue_id) when is_binary(issue_id) do
+    case Tracker.fetch_issue_states_by_ids([issue_id]) do
+      {:ok, [issue | _]} ->
+        assign(socket,
+          selected_issue_id: issue.identifier || issue.id,
+          selected_issue: Presenter.issue_detail_payload(issue),
+          kanban_queue_error: nil
+        )
+
+      _ ->
+        assign(socket,
+          selected_issue_id: issue_id,
+          selected_issue: nil,
+          kanban_queue_error: "Could not load #{issue_id}."
+        )
+    end
+  end
+
+  defp refresh_selected_issue(%{assigns: %{selected_issue_id: nil}} = socket), do: socket
+
+  defp refresh_selected_issue(%{assigns: %{selected_issue_id: issue_id}} = socket),
+    do: select_issue(socket, issue_id)
+
+  defp queue_label do
+    case Config.settings!().tracker.filter_label do
+      label when is_binary(label) ->
+        case String.trim(label) do
+          "" -> "symphony"
+          trimmed -> trimmed
+        end
+
+      _ ->
+        "symphony"
+    end
+  end
+
   defp orchestrator do
     Endpoint.config(:orchestrator) || SymphonyElixir.Orchestrator
   end
@@ -508,7 +710,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
       end)
   end
 
-  defp format_runtime_and_turns(started_at, turn_count, now) when is_integer(turn_count) and turn_count > 0 do
+  defp format_runtime_and_turns(started_at, turn_count, now)
+       when is_integer(turn_count) and turn_count > 0 do
     "#{format_runtime_seconds(runtime_seconds_from_started_at(started_at, now))} / #{turn_count}"
   end
 
@@ -526,7 +729,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
     DateTime.diff(now, started_at, :second)
   end
 
-  defp runtime_seconds_from_started_at(started_at, %DateTime{} = now) when is_binary(started_at) do
+  defp runtime_seconds_from_started_at(started_at, %DateTime{} = now)
+       when is_binary(started_at) do
     case DateTime.from_iso8601(started_at) do
       {:ok, parsed, _offset} -> runtime_seconds_from_started_at(parsed, now)
       _ -> 0
@@ -550,10 +754,88 @@ defmodule SymphonyElixirWeb.DashboardLive do
     normalized = state |> to_string() |> String.downcase()
 
     cond do
-      String.contains?(normalized, ["progress", "running", "active"]) -> "#{base} state-badge-active"
-      String.contains?(normalized, ["blocked", "error", "failed"]) -> "#{base} state-badge-danger"
-      String.contains?(normalized, ["todo", "queued", "pending", "retry"]) -> "#{base} state-badge-warning"
-      true -> base
+      String.contains?(normalized, ["progress", "running", "active"]) ->
+        "#{base} state-badge-active"
+
+      String.contains?(normalized, ["blocked", "error", "failed"]) ->
+        "#{base} state-badge-danger"
+
+      String.contains?(normalized, ["todo", "queued", "pending", "retry"]) ->
+        "#{base} state-badge-warning"
+
+      true ->
+        base
+    end
+  end
+
+  defp preview_priority(priority) when is_integer(priority) and priority in 1..5,
+    do: "P#{priority - 1}"
+
+  defp preview_priority(_priority), do: "P4"
+
+  defp blank?(value), do: value in [nil, ""]
+
+  defp markdown_blocks(description) when is_binary(description) do
+    description
+    |> String.split("\n")
+    |> parse_markdown_blocks([])
+    |> Enum.reverse()
+  end
+
+  defp markdown_blocks(_description), do: []
+
+  defp parse_markdown_blocks([], acc), do: acc
+
+  defp parse_markdown_blocks(["```" <> _rest | lines], acc) do
+    {code_lines, rest} = Enum.split_while(lines, &(&1 != "```"))
+
+    rest =
+      case rest do
+        ["```" | tail] -> tail
+        tail -> tail
+      end
+
+    parse_markdown_blocks(rest, [%{type: :code, text: Enum.join(code_lines, "\n")} | acc])
+  end
+
+  defp parse_markdown_blocks([line | lines], acc) do
+    trimmed = String.trim(line)
+
+    cond do
+      trimmed == "" ->
+        parse_markdown_blocks(lines, acc)
+
+      String.starts_with?(trimmed, "#") ->
+        text = trimmed |> String.trim_leading("#") |> String.trim()
+        parse_markdown_blocks(lines, [%{type: :heading, text: text} | acc])
+
+      String.starts_with?(trimmed, ["- ", "* "]) ->
+        {items, rest} =
+          Enum.split_while([line | lines], fn candidate ->
+            candidate = String.trim(candidate)
+            String.starts_with?(candidate, ["- ", "* "])
+          end)
+
+        items =
+          Enum.map(items, fn item ->
+            item
+            |> String.trim()
+            |> String.replace(~r/^[-*]\s+/, "")
+          end)
+
+        parse_markdown_blocks(rest, [%{type: :list, items: items} | acc])
+
+      true ->
+        {paragraph_lines, rest} =
+          Enum.split_while([line | lines], fn candidate ->
+            trimmed_candidate = String.trim(candidate)
+
+            trimmed_candidate != "" and
+              not String.starts_with?(trimmed_candidate, ["#", "- ", "* ", "```"])
+          end)
+
+        text = Enum.map_join(paragraph_lines, " ", &String.trim/1)
+        parse_markdown_blocks(rest, [%{type: :paragraph, text: text} | acc])
     end
   end
 
@@ -563,4 +845,5 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp pretty_value(nil), do: "n/a"
   defp pretty_value(value), do: inspect(value, pretty: true, limit: :infinity)
+  defp pretty_json(value), do: Jason.encode!(value, pretty: true)
 end

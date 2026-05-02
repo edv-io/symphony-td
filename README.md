@@ -90,6 +90,10 @@ tail -f ~/Projects/symphony-td/elixir/log/*.log
 To remove an issue from Symphony's queue mid-run, drop the `symphony` label or move it to a
 `terminal_states` value (`closed`).
 
+The local dashboard also exposes `/kanban` for td workflows. Open tasks without the filter label
+stay in Open; tasks carrying the label appear in Ready. Drag an Open card into Ready to add the
+configured `tracker.filter_label` without switching back to the terminal.
+
 [![Symphony demo video preview](.github/media/symphony-demo-poster.jpg)](.github/media/symphony-demo.mp4)
 
 _In this [demo video](.github/media/symphony-demo.mp4), Symphony monitors a Linear board for work and spawns agents to handle the tasks. The agents complete the tasks and provide proof of work: CI status, PR review feedback, complexity analysis, and walkthrough videos. When accepted, the agents land the PR safely. Engineers do not need to supervise Codex; they can manage the work at a higher level._
