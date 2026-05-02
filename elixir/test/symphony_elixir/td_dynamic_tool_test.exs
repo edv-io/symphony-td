@@ -301,7 +301,6 @@ defmodule SymphonyElixir.Codex.TdDynamicToolTest do
 
       assert_received {:td_runner_called, "/work/repo-a", "comment", "td-2c2676", ["--", "--work-dir=/tmp/x"]}
     end
-
   end
 
   describe "td adapter state-mapping argv shapes" do
