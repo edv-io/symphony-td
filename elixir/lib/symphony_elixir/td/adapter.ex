@@ -17,6 +17,7 @@ defmodule SymphonyElixir.Td.Adapter do
   require Logger
 
   alias SymphonyElixir.Config
+  alias SymphonyElixir.Td.Cli
   alias SymphonyElixir.Tracker.Issue
 
   @fetch_issues_by_states_limit 500
@@ -83,19 +84,17 @@ defmodule SymphonyElixir.Td.Adapter do
   @impl true
   @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}
   def create_comment(issue_id, body) when is_binary(issue_id) and is_binary(body) do
-    cond do
-      not SymphonyElixir.Td.Cli.literal_safe?(body) ->
-        # td/Cobra interprets `@<path>` and `-` as file-read / stdin primitives.
-        # Reject before spawning so a comment body cannot become a local file read.
-        {:error, :td_unsafe_literal_body}
-
-      true ->
-        with {:ok, dir} <- locate_project_dir(issue_id) do
-          # `--` so td/Cobra cannot parse the body as a flag (e.g. --work-dir=/x).
-          # Same defense the dynamic tool applies to agent-supplied bodies; the
-          # callback is a public Tracker API that could carry agent-influenced text.
-          cli_module().write(dir, "comment", issue_id, ["--", body])
-        end
+    if Cli.literal_safe?(body) do
+      with {:ok, dir} <- locate_project_dir(issue_id) do
+        # `--` so td/Cobra cannot parse the body as a flag (e.g. --work-dir=/x).
+        # Same defense the dynamic tool applies to agent-supplied bodies; the
+        # callback is a public Tracker API that could carry agent-influenced text.
+        cli_module().write(dir, "comment", issue_id, ["--", body])
+      end
+    else
+      # td/Cobra interprets `@<path>` and `-` as file-read / stdin primitives.
+      # Reject before spawning so a comment body cannot become a local file read.
+      {:error, :td_unsafe_literal_body}
     end
   end
 
@@ -150,12 +149,14 @@ defmodule SymphonyElixir.Td.Adapter do
     tracker = Config.settings!().tracker
 
     with {:ok, dirs} <- resolve_project_dirs(tracker) do
-      Enum.reduce_while(dirs, {:error, :td_issue_not_found}, fn dir, _acc ->
-        case cli_module().list_json(dir, ids: [issue_id], include_closed: true) do
-          {:ok, [_one | _]} -> {:halt, {:ok, dir}}
-          _ -> {:cont, {:error, :td_issue_not_found}}
-        end
-      end)
+      Enum.reduce_while(dirs, {:error, :td_issue_not_found}, &check_dir_for_issue(&1, &2, issue_id))
+    end
+  end
+
+  defp check_dir_for_issue(dir, _acc, issue_id) do
+    case cli_module().list_json(dir, ids: [issue_id], include_closed: true) do
+      {:ok, [_one | _]} -> {:halt, {:ok, dir}}
+      _ -> {:cont, {:error, :td_issue_not_found}}
     end
   end
 
@@ -283,18 +284,19 @@ defmodule SymphonyElixir.Td.Adapter do
   # WORKFLOW.md authors specify the *target* state by td name. We map them to
   # the appropriate td CLI subcommand so callers don't need to know the table.
   defp map_state_to_command(state_name) when is_binary(state_name) do
-    case String.downcase(state_name) do
-      "in_progress" -> {:ok, "start", []}
-      "in progress" -> {:ok, "start", []}
-      "open" -> {:ok, "unstart", []}
-      "in_review" -> {:ok, "review", []}
-      "in review" -> {:ok, "review", []}
-      "closed" -> {:ok, "done", ["--self-close-exception=symphony"]}
-      "done" -> {:ok, "done", ["--self-close-exception=symphony"]}
-      "blocked" -> {:ok, "block", ["--reason=blocked by symphony"]}
-      _ -> {:error, {:td_unsupported_state, state_name}}
-    end
+    state_name
+    |> String.downcase()
+    |> String.replace(" ", "_")
+    |> dispatch_state_command(state_name)
   end
+
+  defp dispatch_state_command("in_progress", _), do: {:ok, "start", []}
+  defp dispatch_state_command("open", _), do: {:ok, "unstart", []}
+  defp dispatch_state_command("in_review", _), do: {:ok, "review", []}
+  defp dispatch_state_command("closed", _), do: {:ok, "done", ["--self-close-exception=symphony"]}
+  defp dispatch_state_command("done", _), do: {:ok, "done", ["--self-close-exception=symphony"]}
+  defp dispatch_state_command("blocked", _), do: {:ok, "block", ["--reason=blocked by symphony"]}
+  defp dispatch_state_command(_, original), do: {:error, {:td_unsupported_state, original}}
 
   defp sort_by_requested_ids(issues, ids) when is_list(issues) and is_list(ids) do
     index = ids |> Enum.with_index() |> Map.new()

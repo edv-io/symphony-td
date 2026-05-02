@@ -560,7 +560,6 @@ defmodule SymphonyElixir.Workspace do
   defp hook_env_exports(issue_context) when is_map(issue_context) do
     issue_context
     |> hook_env()
-    |> Enum.map(fn {name, value} -> "export #{name}=#{shell_escape(value)}; " end)
-    |> Enum.join("")
+    |> Enum.map_join("", fn {name, value} -> "export #{name}=#{shell_escape(value)}; " end)
   end
 end

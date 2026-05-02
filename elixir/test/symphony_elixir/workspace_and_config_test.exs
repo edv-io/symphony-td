@@ -445,12 +445,24 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert Enum.map(issues, & &1.id) == issue_ids
 
-    assert_receive {:fetch_issue_states_page, query, %{ids: ^first_batch_ids, identifiers: ^first_batch_ids, first: 50, relationFirst: 50}}
+    assert_receive {:fetch_issue_states_page, query,
+                    %{
+                      ids: ^first_batch_ids,
+                      identifiers: ^first_batch_ids,
+                      first: 50,
+                      relationFirst: 50
+                    }}
 
     assert query =~ "SymphonyLinearIssuesById"
     assert query =~ "identifier"
 
-    assert_receive {:fetch_issue_states_page, ^query, %{ids: ^second_batch_ids, identifiers: ^second_batch_ids, first: 5, relationFirst: 50}}
+    assert_receive {:fetch_issue_states_page, ^query,
+                    %{
+                      ids: ^second_batch_ids,
+                      identifiers: ^second_batch_ids,
+                      first: 5,
+                      relationFirst: 50
+                    }}
   end
 
   test "linear client issue state fetch accepts workspace identifiers" do
@@ -492,7 +504,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert Enum.map(issues, & &1.identifier) == issue_ids
 
-    assert_receive {:fetch_issue_states_page, query, %{ids: ^issue_ids, identifiers: ^issue_ids, first: 2, relationFirst: 50}}
+    expected_vars = %{ids: issue_ids, identifiers: issue_ids, first: 2, relationFirst: 50}
+    assert_receive {:fetch_issue_states_page, query, ^expected_vars}
 
     assert query =~ "identifier"
   end
