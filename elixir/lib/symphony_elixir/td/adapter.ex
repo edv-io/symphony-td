@@ -19,6 +19,8 @@ defmodule SymphonyElixir.Td.Adapter do
   alias SymphonyElixir.Config
   alias SymphonyElixir.Tracker.Issue
 
+  @fetch_issues_by_states_limit 500
+
   defp cli_module do
     Application.get_env(:symphony_elixir, :td_cli_module, SymphonyElixir.Td.Cli)
   end
@@ -50,7 +52,11 @@ defmodule SymphonyElixir.Td.Adapter do
 
       with {:ok, dirs} <- resolve_project_dirs(tracker) do
         # `-a` so closed issues are returned when callers query for terminal states.
-        fan_out_list(dirs, statuses: normalized, include_closed: true)
+        fan_out_list(dirs,
+          statuses: normalized,
+          include_closed: true,
+          limit: @fetch_issues_by_states_limit
+        )
       end
     end
   end
