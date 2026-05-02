@@ -52,7 +52,7 @@ Prerequisites:
 
 ```sh
 # 1. Get the build
-git clone https://github.com/edv-io/symphony-td ~/Projects/symphony-td
+git clone https://github.com/alex-edv/symphony-td ~/Projects/symphony-td
 cd ~/Projects/symphony-td/elixir
 mise trust && mise install
 mise exec -- mix deps.get
