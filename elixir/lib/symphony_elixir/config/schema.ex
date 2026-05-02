@@ -232,7 +232,11 @@ defmodule SymphonyElixir.Config.Schema do
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
-      |> cast(attrs, [:after_create, :before_run, :before_turn, :after_run, :before_remove, :timeout_ms], empty_values: [])
+      |> cast(
+        attrs,
+        [:after_create, :before_run, :before_turn, :after_run, :before_remove, :timeout_ms],
+        empty_values: []
+      )
       |> validate_number(:timeout_ms, greater_than: 0)
     end
   end

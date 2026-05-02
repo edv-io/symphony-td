@@ -274,24 +274,30 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp build_td_args(sub, _, _), do: {:error, {:td_disallowed_subcommand, sub}}
 
   defp build_handoff_args(handoff) when is_map(handoff) do
-    Enum.reduce_while(@handoff_flags, {:ok, []}, fn flag, {:ok, acc} ->
-      values = handoff[flag] || handoff[String.to_atom(flag)] || []
+    Enum.reduce_while(@handoff_flags, {:ok, []}, &accumulate_handoff_flag(&1, &2, handoff))
+  end
 
-      values
-      |> List.wrap()
-      |> Enum.filter(&is_binary/1)
-      |> Enum.reduce_while({:ok, []}, fn value, {:ok, vacc} ->
-        if td_literal_safe?(value) do
-          {:cont, {:ok, vacc ++ ["--#{flag}=" <> value]}}
-        else
-          {:halt, {:error, {:td_unsafe_handoff_value, flag}}}
-        end
-      end)
-      |> case do
-        {:ok, flag_args} -> {:cont, {:ok, acc ++ flag_args}}
-        {:error, _} = err -> {:halt, err}
-      end
+  defp accumulate_handoff_flag(flag, {:ok, acc}, handoff) do
+    values = (handoff[flag] || handoff[String.to_atom(flag)] || []) |> List.wrap() |> Enum.filter(&is_binary/1)
+
+    case build_flag_args(flag, values) do
+      {:ok, flag_args} -> {:cont, {:ok, acc ++ flag_args}}
+      {:error, _} = err -> {:halt, err}
+    end
+  end
+
+  defp build_flag_args(flag, values) do
+    Enum.reduce_while(values, {:ok, []}, fn value, {:ok, vacc} ->
+      build_flag_value(flag, value, vacc)
     end)
+  end
+
+  defp build_flag_value(flag, value, vacc) do
+    if td_literal_safe?(value) do
+      {:cont, {:ok, vacc ++ ["--#{flag}=" <> value]}}
+    else
+      {:halt, {:error, {:td_unsafe_handoff_value, flag}}}
+    end
   end
 
   # Delegates to the shared check in Td.Cli so both the agent path (this module)
@@ -306,12 +312,14 @@ defmodule SymphonyElixir.Codex.DynamicTool do
     if dirs == [] do
       {:error, :td_no_projects_configured}
     else
-      Enum.reduce_while(dirs, {:error, :td_issue_not_found}, fn dir, _acc ->
-        case td_lister.(dir, ids: [issue_id], include_closed: true) do
-          {:ok, [_one | _]} -> {:halt, {:ok, dir}}
-          _ -> {:cont, {:error, :td_issue_not_found}}
-        end
-      end)
+      Enum.reduce_while(dirs, {:error, :td_issue_not_found}, &check_td_dir(&1, &2, issue_id, td_lister))
+    end
+  end
+
+  defp check_td_dir(dir, _acc, issue_id, td_lister) do
+    case td_lister.(dir, ids: [issue_id], include_closed: true) do
+      {:ok, [_one | _]} -> {:halt, {:ok, dir}}
+      _ -> {:cont, {:error, :td_issue_not_found}}
     end
   end
 
@@ -334,8 +342,6 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp valid_issue_id?(id) when is_binary(id) do
     Regex.match?(~r/\A[A-Za-z0-9_\-]{1,64}\z/, id) and not String.starts_with?(id, "-")
   end
-
-  defp valid_issue_id?(_), do: false
 
   defp optional_handoff_payload(%{"handoff" => map}) when is_map(map), do: map
   defp optional_handoff_payload(%{handoff: map}) when is_map(map), do: map

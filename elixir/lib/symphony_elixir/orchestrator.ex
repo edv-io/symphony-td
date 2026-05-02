@@ -924,16 +924,7 @@ defmodule SymphonyElixir.Orchestrator do
     case issue_fetcher.(workspace_issue_ids) do
       {:ok, issues} ->
         terminal_states = terminal_state_set()
-
-        Enum.each(issues, fn
-          %Issue{} = issue ->
-            if terminal_issue_state?(issue.state, terminal_states) do
-              cleanup_issue_workspaces_for_issue(issue, cleanup_fun)
-            end
-
-          _ ->
-            :ok
-        end)
+        Enum.each(issues, &cleanup_if_terminal(&1, terminal_states, cleanup_fun))
 
       {:error, reason} ->
         Logger.warning("Skipping terminal workspace cleanup by workspace scan; failed to fetch workspace issue states: #{inspect(reason)}")
@@ -941,6 +932,14 @@ defmodule SymphonyElixir.Orchestrator do
 
     :ok
   end
+
+  defp cleanup_if_terminal(%Issue{} = issue, terminal_states, cleanup_fun) do
+    if terminal_issue_state?(issue.state, terminal_states) do
+      cleanup_issue_workspaces_for_issue(issue, cleanup_fun)
+    end
+  end
+
+  defp cleanup_if_terminal(_, _, _), do: :ok
 
   defp cleanup_issue_workspaces_for_issue(%Issue{} = issue, cleanup_fun) when is_function(cleanup_fun, 1) do
     if is_binary(issue.identifier) do

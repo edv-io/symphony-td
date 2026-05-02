@@ -115,26 +115,32 @@ defmodule SymphonyElixir.Config do
   end
 
   defp validate_semantics(settings) do
-    cond do
-      is_nil(settings.tracker.kind) ->
-        {:error, :missing_tracker_kind}
-
-      settings.tracker.kind not in ["linear", "memory", "td"] ->
-        {:error, {:unsupported_tracker_kind, settings.tracker.kind}}
-
-      settings.tracker.kind == "linear" and not is_binary(settings.tracker.api_key) ->
-        {:error, :missing_linear_api_token}
-
-      settings.tracker.kind == "linear" and not is_binary(settings.tracker.project_slug) ->
-        {:error, :missing_linear_project_slug}
-
-      settings.tracker.kind == "td" and not td_projects_configured?(settings.tracker) ->
-        {:error, :missing_td_projects}
-
-      true ->
-        :ok
+    with :ok <- validate_tracker_kind(settings.tracker) do
+      validate_tracker_specific(settings.tracker)
     end
   end
+
+  defp validate_tracker_kind(%{kind: nil}), do: {:error, :missing_tracker_kind}
+
+  defp validate_tracker_kind(%{kind: kind}) when kind in ["linear", "memory", "td"], do: :ok
+
+  defp validate_tracker_kind(%{kind: kind}), do: {:error, {:unsupported_tracker_kind, kind}}
+
+  defp validate_tracker_specific(%{kind: "linear"} = tracker), do: validate_linear(tracker)
+
+  defp validate_tracker_specific(%{kind: "td"} = tracker) do
+    if td_projects_configured?(tracker), do: :ok, else: {:error, :missing_td_projects}
+  end
+
+  defp validate_tracker_specific(_), do: :ok
+
+  defp validate_linear(%{api_key: api_key}) when not is_binary(api_key),
+    do: {:error, :missing_linear_api_token}
+
+  defp validate_linear(%{project_slug: slug}) when not is_binary(slug),
+    do: {:error, :missing_linear_project_slug}
+
+  defp validate_linear(_), do: :ok
 
   defp td_projects_configured?(%{projects: projects, scope: scope}) do
     (is_list(projects) and projects != []) or scope == "all"
