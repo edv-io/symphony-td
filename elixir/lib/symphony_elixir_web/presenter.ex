@@ -6,7 +6,7 @@ defmodule SymphonyElixirWeb.Presenter do
   alias SymphonyElixir.{Config, Orchestrator, StatusDashboard, Tracker}
   alias SymphonyElixir.Tracker.Issue
 
-  @kanban_states ~w(open in_progress in_review blocked)
+  @kanban_states ~w(open ready in_progress in_review blocked)
   @closed_state "closed"
   @default_closed_limit 20
 
@@ -29,15 +29,23 @@ defmodule SymphonyElixirWeb.Presenter do
         }
 
       :timeout ->
-        %{generated_at: generated_at, error: %{code: "snapshot_timeout", message: "Snapshot timed out"}}
+        %{
+          generated_at: generated_at,
+          error: %{code: "snapshot_timeout", message: "Snapshot timed out"}
+        }
 
       :unavailable ->
-        %{generated_at: generated_at, error: %{code: "snapshot_unavailable", message: "Snapshot unavailable"}}
+        %{
+          generated_at: generated_at,
+          error: %{code: "snapshot_unavailable", message: "Snapshot unavailable"}
+        }
     end
   end
 
-  @spec issue_payload(String.t(), GenServer.name(), timeout()) :: {:ok, map()} | {:error, :issue_not_found}
-  def issue_payload(issue_identifier, orchestrator, snapshot_timeout_ms) when is_binary(issue_identifier) do
+  @spec issue_payload(String.t(), GenServer.name(), timeout()) ::
+          {:ok, map()} | {:error, :issue_not_found}
+  def issue_payload(issue_identifier, orchestrator, snapshot_timeout_ms)
+      when is_binary(issue_identifier) do
     case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
       %{} = snapshot ->
         running = Enum.find(snapshot.running, &(&1.identifier == issue_identifier))
@@ -56,12 +64,13 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp tracker_issue_payload(issue_identifier) do
     case Tracker.fetch_issue_states_by_ids([issue_identifier]) do
-      {:ok, [%Issue{} = issue | _]} -> {:ok, tracker_issue_body(issue)}
+      {:ok, [%Issue{} = issue | _]} -> {:ok, issue_detail_payload(issue)}
       _ -> {:error, :issue_not_found}
     end
   end
 
-  defp tracker_issue_body(%Issue{} = issue) do
+  @spec issue_detail_payload(Issue.t()) :: map()
+  def issue_detail_payload(%Issue{} = issue) do
     %{
       issue_identifier: issue.identifier,
       issue_id: issue.id,
@@ -108,7 +117,7 @@ defmodule SymphonyElixirWeb.Presenter do
       |> Enum.filter(fn issue ->
         match?(%Issue{}, issue) and kanban_label_match?(issue, filter_label, symphony_only?)
       end)
-      |> Enum.map(&kanban_card(&1, show_project?))
+      |> Enum.map(&kanban_card(&1, show_project?, filter_label))
 
     columns =
       Map.new(states, fn state ->
@@ -163,17 +172,21 @@ defmodule SymphonyElixirWeb.Presenter do
     }
   end
 
-  defp kanban_card(%Issue{} = issue, show_project?) do
+  defp kanban_card(%Issue{} = issue, show_project?, filter_label) do
     id = issue.identifier || issue.id || "unknown"
     labels = issue.labels |> Enum.map(&to_string/1) |> Enum.reject(&(&1 == "")) |> Enum.sort()
+    title = issue.title || "(untitled)"
+    visible_labels = Enum.take(labels, 3)
 
     %{
       id: id,
-      title: issue.title || "(untitled)",
-      state: normalize_kanban_state(issue.state),
+      title: title,
+      display_title: truncate_title(title),
+      state: kanban_card_state(issue, filter_label),
       priority: kanban_priority_label(issue.priority),
       priority_rank: kanban_priority_rank(issue.priority),
-      labels: labels,
+      labels: visible_labels,
+      label_overflow_count: max(length(labels) - length(visible_labels), 0),
       project: kanban_project_label(issue.project_dir, show_project?),
       project_dir: issue.project_dir,
       updated_at: iso8601(issue.updated_at),
@@ -183,17 +196,39 @@ defmodule SymphonyElixirWeb.Presenter do
     }
   end
 
+  defp kanban_card_state(%Issue{} = issue, filter_label) when is_binary(filter_label) do
+    state = normalize_kanban_state(issue.state)
+
+    if state == "open" and has_label?(issue.labels, filter_label) do
+      "ready"
+    else
+      state
+    end
+  end
+
+  defp kanban_card_state(%Issue{} = issue, _filter_label), do: normalize_kanban_state(issue.state)
+
   defp kanban_label_match?(_issue, _filter_label, false), do: true
   defp kanban_label_match?(_issue, nil, true), do: true
 
   defp kanban_label_match?(%Issue{labels: labels}, filter_label, true) do
+    has_label?(labels, filter_label)
+  end
+
+  defp has_label?(labels, filter_label) when is_list(labels) do
     labels
     |> Enum.map(&normalize_label/1)
     |> Enum.any?(&(&1 == filter_label))
   end
 
+  defp has_label?(_labels, _filter_label), do: false
+
   defp sort_kanban_cards(cards, @closed_state) do
-    Enum.sort_by(cards, &{datetime_sort_key(&1.updated_at), datetime_sort_key(&1.created_at), &1.id}, :desc)
+    Enum.sort_by(
+      cards,
+      &{datetime_sort_key(&1.updated_at), datetime_sort_key(&1.created_at), &1.id},
+      :desc
+    )
   end
 
   defp sort_kanban_cards(cards, _state) do
@@ -235,11 +270,23 @@ defmodule SymphonyElixirWeb.Presenter do
   defp normalize_kanban_state(_state), do: ""
 
   defp normalize_label(nil), do: nil
-  defp normalize_label(""), do: nil
-  defp normalize_label(label) when is_binary(label), do: label |> String.trim() |> String.downcase()
+
+  defp normalize_label(label) when is_binary(label) do
+    case label |> String.trim() |> String.downcase() do
+      "" -> nil
+      normalized -> normalized
+    end
+  end
+
   defp normalize_label(label), do: label |> to_string() |> normalize_label()
 
-  defp project_count(projects) when is_list(projects), do: projects |> Enum.reject(&is_nil/1) |> length()
+  defp truncate_title(title) when is_binary(title) do
+    if String.length(title) > 60, do: String.slice(title, 0, 57) <> "...", else: title
+  end
+
+  defp project_count(projects) when is_list(projects),
+    do: projects |> Enum.reject(&is_nil/1) |> length()
+
   defp project_count(_projects), do: 0
 
   defp datetime_sort_key(nil), do: ""

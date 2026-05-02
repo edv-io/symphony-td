@@ -108,6 +108,26 @@ defmodule SymphonyElixir.Td.Adapter do
     end
   end
 
+  @impl true
+  @spec add_label(String.t(), String.t()) :: :ok | {:error, term()}
+  def add_label(issue_id, label) when is_binary(issue_id) and is_binary(label) do
+    label = normalize_label(label)
+
+    cond do
+      label == "" ->
+        {:error, :td_invalid_label}
+
+      not safe_label_literal?(label) ->
+        {:error, :td_unsafe_literal_label}
+
+      true ->
+        with {:ok, dir, raw_issue} <- locate_project_issue(issue_id),
+             {:ok, labels} <- merged_labels(raw_issue, label) do
+          cli_module().write(dir, "update", issue_id, ["--labels=#{Enum.join(labels, ",")}"])
+        end
+    end
+  end
+
   # --- Helpers ---------------------------------------------------------------
 
   defp resolve_project_dirs(tracker) do
@@ -153,9 +173,24 @@ defmodule SymphonyElixir.Td.Adapter do
     end
   end
 
+  defp locate_project_issue(issue_id) do
+    tracker = Config.settings!().tracker
+
+    with {:ok, dirs} <- resolve_project_dirs(tracker) do
+      Enum.reduce_while(dirs, {:error, :td_issue_not_found}, &check_dir_for_issue_payload(&1, &2, issue_id))
+    end
+  end
+
   defp check_dir_for_issue(dir, _acc, issue_id) do
     case cli_module().list_json(dir, ids: [issue_id], include_closed: true) do
       {:ok, [_one | _]} -> {:halt, {:ok, dir}}
+      _ -> {:cont, {:error, :td_issue_not_found}}
+    end
+  end
+
+  defp check_dir_for_issue_payload(dir, _acc, issue_id) do
+    case cli_module().list_json(dir, ids: [issue_id], include_closed: true) do
+      {:ok, [one | _]} -> {:halt, {:ok, dir, one}}
       _ -> {:cont, {:error, :td_issue_not_found}}
     end
   end
@@ -213,6 +248,26 @@ defmodule SymphonyElixir.Td.Adapter do
 
   defp extract_labels(_), do: []
 
+  defp merged_labels(raw_issue, label) do
+    labels =
+      raw_issue
+      |> extract_labels()
+      |> Enum.map(&normalize_label/1)
+      |> Enum.reject(&(&1 in [nil, ""]))
+
+    if Enum.all?(labels, &safe_label_literal?/1) do
+      {:ok, labels |> Kernel.++([label]) |> Enum.uniq() |> Enum.sort()}
+    else
+      {:error, :td_unsafe_literal_label}
+    end
+  end
+
+  defp safe_label_literal?(label) when is_binary(label) do
+    Cli.literal_safe?(label) and not String.contains?(label, [",", "\n", "\r"])
+  end
+
+  defp safe_label_literal?(_label), do: false
+
   defp empty_to_nil(nil), do: nil
   defp empty_to_nil(""), do: nil
   defp empty_to_nil(value) when is_binary(value), do: value
@@ -232,6 +287,9 @@ defmodule SymphonyElixir.Td.Adapter do
 
   defp normalize_state(value) when is_binary(value), do: value |> String.trim() |> String.downcase()
   defp normalize_state(_), do: ""
+
+  defp normalize_label(value) when is_binary(value), do: value |> String.trim() |> String.downcase()
+  defp normalize_label(value), do: value |> to_string() |> normalize_label()
 
   defp branch_name_for(id, title) when is_binary(id) do
     slug =

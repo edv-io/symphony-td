@@ -248,6 +248,50 @@ defmodule SymphonyElixir.Td.AdapterTest do
     end
   end
 
+  describe "add_label/2" do
+    test "locates the project and updates labels idempotently" do
+      Process.put({FakeCli, "/work/repo-a"}, [])
+      Process.put({FakeCli, "/work/repo-b"}, [td_issue("td-cccc", "open", labels: ["ui"])])
+
+      assert :ok = Adapter.add_label("td-cccc", "symphony")
+
+      assert_received {:write_called, "/work/repo-b", "update", "td-cccc", ["--labels=symphony,ui"]}
+    end
+
+    test "does not duplicate an existing label" do
+      Process.put({FakeCli, "/work/repo-a"}, [td_issue("td-aaaa", "open", labels: ["symphony", "ui"])])
+      Process.put({FakeCli, "/work/repo-b"}, [])
+
+      assert :ok = Adapter.add_label("td-aaaa", "symphony")
+
+      assert_received {:write_called, "/work/repo-a", "update", "td-aaaa", ["--labels=symphony,ui"]}
+    end
+
+    test "rejects @<path> label before spawning td" do
+      Process.put({FakeCli, "/work/repo-a"}, [td_issue("td-aaaa", "open")])
+      Process.put({FakeCli, "/work/repo-b"}, [])
+
+      assert {:error, :td_unsafe_literal_label} = Adapter.add_label("td-aaaa", "@/etc/passwd")
+      refute_received {:write_called, _, _, _, _}
+    end
+
+    test "rejects bare - label before spawning td" do
+      Process.put({FakeCli, "/work/repo-a"}, [td_issue("td-aaaa", "open")])
+      Process.put({FakeCli, "/work/repo-b"}, [])
+
+      assert {:error, :td_unsafe_literal_label} = Adapter.add_label("td-aaaa", "-")
+      refute_received {:write_called, _, _, _, _}
+    end
+
+    test "surfaces td CLI failures" do
+      Process.put({FakeCli, "/work/repo-a"}, [td_issue("td-aaaa", "open")])
+      Process.put({FakeCli, "/work/repo-b"}, [])
+      Process.put({FakeCli, :write_result}, {:error, {:td_cli_error, 1, "boom"}})
+
+      assert {:error, {:td_cli_error, 1, "boom"}} = Adapter.add_label("td-aaaa", "queued")
+    end
+  end
+
   describe "issue normalization" do
     test "translates td priority strings to Linear-style integers" do
       Process.put({FakeCli, "/work/repo-a"}, [

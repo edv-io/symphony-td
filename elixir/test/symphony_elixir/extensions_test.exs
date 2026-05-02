@@ -194,12 +194,15 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:ok, [^issue]} = SymphonyElixir.Tracker.fetch_issue_states_by_ids(["issue-1"])
     assert :ok = SymphonyElixir.Tracker.create_comment("issue-1", "comment")
     assert :ok = SymphonyElixir.Tracker.update_issue_state("issue-1", "Done")
+    assert :ok = SymphonyElixir.Tracker.add_label("issue-1", "ready")
     assert_receive {:memory_tracker_comment, "issue-1", "comment"}
     assert_receive {:memory_tracker_state_update, "issue-1", "Done"}
+    assert_receive {:memory_tracker_add_label, "issue-1", "ready"}
 
     Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
     assert :ok = Memory.create_comment("issue-1", "quiet")
     assert :ok = Memory.update_issue_state("issue-1", "Quiet")
+    assert :ok = Memory.add_label("issue-1", "quiet-label")
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
     assert SymphonyElixir.Tracker.adapter() == Adapter
@@ -317,6 +320,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     )
 
     assert {:error, :issue_update_failed} = Adapter.update_issue_state("issue-1", "Odd")
+
+    assert {:error, :unsupported_tracker} = Adapter.add_label("issue-1", "ready")
   end
 
   test "phoenix observability api preserves state, issue, and refresh responses" do

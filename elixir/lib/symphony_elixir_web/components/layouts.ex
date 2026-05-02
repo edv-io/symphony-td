@@ -28,7 +28,50 @@ defmodule SymphonyElixirWeb.Layouts do
 
             if (!window.Phoenix || !window.LiveView) return;
 
+            var hooks = {
+              KanbanDraggableCard: {
+                mounted: function () {
+                  this.el.addEventListener("dragstart", function (event) {
+                    event.dataTransfer.effectAllowed = "move";
+                    event.dataTransfer.setData("text/plain", event.currentTarget.dataset.issueId || "");
+                    event.currentTarget.classList.add("kanban-card-dragging");
+                  });
+
+                  this.el.addEventListener("dragend", function (event) {
+                    event.currentTarget.classList.remove("kanban-card-dragging");
+                  });
+                }
+              },
+              KanbanDropTarget: {
+                mounted: function () {
+                  var el = this.el;
+                  var self = this;
+
+                  el.addEventListener("dragover", function (event) {
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "move";
+                    el.classList.add("kanban-column-drop-hover");
+                  });
+
+                  el.addEventListener("dragleave", function (event) {
+                    if (!el.contains(event.relatedTarget)) {
+                      el.classList.remove("kanban-column-drop-hover");
+                    }
+                  });
+
+                  el.addEventListener("drop", function (event) {
+                    event.preventDefault();
+                    el.classList.remove("kanban-column-drop-hover");
+
+                    var id = event.dataTransfer.getData("text/plain");
+                    if (id) self.pushEvent("queue_issue", {id: id});
+                  });
+                }
+              }
+            };
+
             var liveSocket = new window.LiveView.LiveSocket("/live", window.Phoenix.Socket, {
+              hooks: hooks,
               params: {_csrf_token: csrfToken}
             });
 

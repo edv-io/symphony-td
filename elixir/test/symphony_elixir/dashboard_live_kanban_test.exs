@@ -38,6 +38,26 @@ defmodule SymphonyElixir.DashboardLiveKanbanTest do
       {:ok, issues}
     end
 
+    def write(project_dir, subcommand, issue_id, args) do
+      recipient = Application.get_env(:symphony_elixir, :fake_td_recipient)
+      if is_pid(recipient), do: send(recipient, {:write_called, project_dir, subcommand, issue_id, args})
+
+      if subcommand == "update" do
+        labels =
+          args
+          |> Enum.find_value(fn
+            "--labels=" <> labels -> labels
+            _ -> nil
+          end)
+          |> to_string()
+          |> String.split(",", trim: true)
+
+        update_fake_issue(project_dir, issue_id, labels)
+      end
+
+      :ok
+    end
+
     def list_project_dirs do
       dirs =
         :symphony_elixir
@@ -45,6 +65,20 @@ defmodule SymphonyElixir.DashboardLiveKanbanTest do
         |> Map.keys()
 
       {:ok, dirs}
+    end
+
+    defp update_fake_issue(project_dir, issue_id, labels) do
+      issues = Application.get_env(:symphony_elixir, :fake_td_issues, %{})
+
+      updated_project_issues =
+        issues
+        |> Map.get(project_dir, [])
+        |> Enum.map(fn
+          %{"id" => ^issue_id} = issue -> Map.put(issue, "labels", labels)
+          issue -> issue
+        end)
+
+      Application.put_env(:symphony_elixir, :fake_td_issues, Map.put(issues, project_dir, updated_project_issues))
     end
   end
 
@@ -67,7 +101,7 @@ defmodule SymphonyElixir.DashboardLiveKanbanTest do
     :ok
   end
 
-  test "kanban tab renders td cards in the right columns" do
+  test "kanban tab renders td cards in the right visual columns" do
     repo_a = "/work/repo-a"
     repo_b = "/work/repo-b"
 
@@ -81,7 +115,8 @@ defmodule SymphonyElixir.DashboardLiveKanbanTest do
 
     put_fake_td_issues(%{
       repo_a => [
-        td_issue("td-open", "open", title: "Open task", labels: ["symphony", "ui"]),
+        td_issue("td-open", "open", title: "Open task", labels: ["ui"]),
+        td_issue("td-ready", "Open", title: "Ready task", labels: ["symphony", "ui"]),
         td_issue("td-review", "in_review", title: "Review task", labels: ["symphony"])
       ],
       repo_b => [
@@ -98,6 +133,9 @@ defmodule SymphonyElixir.DashboardLiveKanbanTest do
     assert html =~ "dashboard-tab-active"
     assert column_text(html, "open") =~ "td-open"
     assert column_text(html, "open") =~ "Open task"
+    refute column_text(html, "open") =~ "td-ready"
+    assert column_text(html, "ready") =~ "td-ready"
+    assert column_text(html, "ready") =~ "Ready task"
     assert column_text(html, "in_progress") =~ "td-progress"
     assert column_text(html, "in_review") =~ "td-review"
     assert column_text(html, "blocked") =~ "td-blocked"
@@ -153,10 +191,118 @@ defmodule SymphonyElixir.DashboardLiveKanbanTest do
 
     {:ok, _view, html} = live(build_conn(), "/kanban")
 
-    assert column_text(html, "open") =~ "No open tasks."
-    assert column_text(html, "in_progress") =~ "No in_progress tasks."
-    assert column_text(html, "in_review") =~ "No in_review tasks."
-    assert column_text(html, "blocked") =~ "No blocked tasks."
+    assert column_text(html, "open") =~ "No Open tasks."
+    assert column_text(html, "ready") =~ "No Ready tasks."
+    assert column_text(html, "in_progress") =~ "No In Progress tasks."
+    assert column_text(html, "in_review") =~ "No In Review tasks."
+    assert column_text(html, "blocked") =~ "No Blocked tasks."
+  end
+
+  test "selecting a card renders the right-side preview pane" do
+    repo = "/work/repo-a"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "td",
+      tracker_api_token: nil,
+      tracker_project_slug: nil,
+      tracker_projects: [repo],
+      tracker_filter_label: "symphony"
+    )
+
+    put_fake_td_issues(%{
+      repo => [
+        td_issue("td-open", "open",
+          title: "Open task",
+          description: "# Context\n\n- Check preview",
+          labels: ["ui", "ops"]
+        )
+      ]
+    })
+
+    start_test_endpoint()
+
+    {:ok, view, _html} = live(build_conn(), "/kanban")
+
+    html =
+      view
+      |> element("#kanban-card-td-open")
+      |> render_click()
+
+    assert html =~ "td-open"
+    assert html =~ "Open task"
+    assert html =~ "Context"
+    assert html =~ "Check preview"
+    assert html =~ "Raw JSON"
+    assert html =~ "kanban-card-selected"
+  end
+
+  test "queue drop event adds the configured filter label and moves the card to Ready" do
+    repo = "/work/repo-a"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "td",
+      tracker_api_token: nil,
+      tracker_project_slug: nil,
+      tracker_projects: [repo],
+      tracker_filter_label: "symphony"
+    )
+
+    put_fake_td_issues(%{
+      repo => [
+        td_issue("td-open", "open", title: "Open task", labels: ["ui"])
+      ]
+    })
+
+    start_test_endpoint()
+
+    {:ok, view, html} = live(build_conn(), "/kanban")
+    assert column_text(html, "open") =~ "td-open"
+    refute column_text(html, "ready") =~ "td-open"
+
+    html = render_hook(view, "queue_issue", %{"id" => "td-open"})
+
+    assert_received {:write_called, ^repo, "update", "td-open", ["--labels=symphony,ui"]}
+    refute column_text(html, "open") =~ "td-open"
+    assert column_text(html, "ready") =~ "td-open"
+  end
+
+  test "queue API adds the configured filter label and returns the updated issue payload" do
+    repo = "/work/repo-a"
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "td",
+      tracker_api_token: nil,
+      tracker_project_slug: nil,
+      tracker_projects: [repo],
+      tracker_filter_label: "symphony"
+    )
+
+    put_fake_td_issues(%{
+      repo => [
+        td_issue("td-open", "open", title: "Open task", labels: ["ui"])
+      ]
+    })
+
+    start_test_endpoint()
+
+    conn = post(build_conn(), "/api/v1/issues/td-open/queue", %{})
+    payload = json_response(conn, 200)
+
+    assert_received {:write_called, ^repo, "update", "td-open", ["--labels=symphony,ui"]}
+    assert payload["issue_identifier"] == "td-open"
+    assert payload["labels"] == ["symphony", "ui"]
+  end
+
+  test "queue API returns a clear 4xx error for non-td trackers" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
+    start_test_endpoint()
+
+    assert json_response(post(build_conn(), "/api/v1/issues/MT-1/queue", %{}), 422) == %{
+             "error" => %{
+               "code" => "unsupported_tracker",
+               "message" => "Queueing is only available when tracker.kind is td."
+             }
+           }
   end
 
   test "kanban tab falls back gracefully for non-td trackers" do
