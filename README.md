@@ -32,6 +32,13 @@ against it. To prevent it from picking up *every* td task, the td adapter requir
 (`tracker.filter_label`, default `symphony`). Only tasks carrying that label are eligible; you opt
 each task in by adding the label.
 
+## Workspace reliability
+
+Long-running agents can continue across multiple Codex turns in the same workspace. Configure
+`hooks.before_turn` in `WORKFLOW.md` to refresh that workspace between turns, for example by
+fetching `origin/main` and rebasing the feature branch before the next turn starts. Hook failures are
+logged and ignored so a failed refresh does not kill the active run.
+
 ## Run td-mode locally
 
 Prerequisites:

@@ -392,6 +392,10 @@ Fields:
   - Runs before each agent attempt after workspace preparation and before launching the coding
     agent.
   - Failure aborts the current attempt.
+- `before_turn` (multiline shell script string, OPTIONAL)
+  - Runs after a coding-agent turn completes and before dispatching the next turn in the same
+    agent attempt.
+  - Failure is logged but ignored.
 - `after_run` (multiline shell script string, OPTIONAL)
   - Runs after each agent attempt (success, failure, timeout, or cancellation) once the workspace
     exists.
@@ -580,6 +584,7 @@ not require recognizing or validating extension fields unless that extension is 
 - `workspace.root`: path resolved to absolute, default `<system-temp>/symphony_workspaces`
 - `hooks.after_create`: shell script or null
 - `hooks.before_run`: shell script or null
+- `hooks.before_turn`: shell script or null
 - `hooks.after_run`: shell script or null
 - `hooks.before_remove`: shell script or null
 - `hooks.timeout_ms`: integer, default `60000`
@@ -868,6 +873,7 @@ Supported hooks:
 
 - `hooks.after_create`
 - `hooks.before_run`
+- `hooks.before_turn`
 - `hooks.after_run`
 - `hooks.before_remove`
 
@@ -884,6 +890,7 @@ Failure semantics:
 
 - `after_create` failure or timeout is fatal to workspace creation.
 - `before_run` failure or timeout is fatal to the current run attempt.
+- `before_turn` failure or timeout is logged and ignored.
 - `after_run` failure or timeout is logged and ignored.
 - `before_remove` failure or timeout is logged and ignored.
 
@@ -1128,7 +1135,9 @@ Behavior:
 2. Build prompt from workflow template.
 3. Start app-server session.
 4. Forward app-server events to orchestrator.
-5. On any error, fail the worker attempt (the orchestrator will retry).
+5. If the issue remains active after a completed turn, run `hooks.before_turn` best-effort and
+   dispatch the next turn in the same app-server session until `agent.max_turns` is reached.
+6. On any error, fail the worker attempt (the orchestrator will retry).
 
 Note:
 
@@ -1858,6 +1867,7 @@ function run_agent_attempt(issue, attempt, orchestrator_channel):
     if turn_number >= max_turns:
       break
 
+    run_hook_best_effort("before_turn", workspace.path)
     turn_number = turn_number + 1
 
   app_server.stop_session(session)
@@ -2078,7 +2088,7 @@ Use the same validation profiles as Section 17:
 - Polling orchestrator with single-authority mutable state
 - Issue tracker client with candidate fetch + state refresh + terminal fetch
 - Workspace manager with sanitized per-issue workspaces
-- Workspace lifecycle hooks (`after_create`, `before_run`, `after_run`, `before_remove`)
+- Workspace lifecycle hooks (`after_create`, `before_run`, `before_turn`, `after_run`, `before_remove`)
 - Hook timeout config (`hooks.timeout_ms`, default `60000`)
 - Coding-agent app-server subprocess client with JSON line protocol
 - Codex launch command config (`codex.command`, default `codex app-server`)

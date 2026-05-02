@@ -105,6 +105,7 @@ defmodule SymphonyElixir.AgentRunner do
       case continue_with_issue?(issue, issue_state_fetcher) do
         {:continue, refreshed_issue} when turn_number < max_turns ->
           Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
+          Workspace.run_before_turn_hook(workspace, refreshed_issue, app_session.worker_host)
 
           do_run_codex_turns(
             app_session,
