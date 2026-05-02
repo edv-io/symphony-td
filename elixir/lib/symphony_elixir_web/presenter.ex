@@ -3,7 +3,7 @@ defmodule SymphonyElixirWeb.Presenter do
   Shared projections for the observability API and dashboard.
   """
 
-  alias SymphonyElixir.{Config, Orchestrator, StatusDashboard}
+  alias SymphonyElixir.{Config, Orchestrator, StatusDashboard, Tracker}
   alias SymphonyElixir.Tracker.Issue
 
   @kanban_states ~w(open in_progress in_review blocked)
@@ -43,16 +43,45 @@ defmodule SymphonyElixirWeb.Presenter do
         running = Enum.find(snapshot.running, &(&1.identifier == issue_identifier))
         retry = Enum.find(snapshot.retrying, &(&1.identifier == issue_identifier))
 
-        if is_nil(running) and is_nil(retry) do
-          {:error, :issue_not_found}
-        else
+        if not is_nil(running) or not is_nil(retry) do
           {:ok, issue_payload_body(issue_identifier, running, retry)}
+        else
+          tracker_issue_payload(issue_identifier)
         end
 
       _ ->
-        {:error, :issue_not_found}
+        tracker_issue_payload(issue_identifier)
     end
   end
+
+  defp tracker_issue_payload(issue_identifier) do
+    case Tracker.fetch_issue_states_by_ids([issue_identifier]) do
+      {:ok, [%Issue{} = issue | _]} -> {:ok, tracker_issue_body(issue)}
+      _ -> {:error, :issue_not_found}
+    end
+  end
+
+  defp tracker_issue_body(%Issue{} = issue) do
+    %{
+      issue_identifier: issue.identifier,
+      issue_id: issue.id,
+      title: issue.title,
+      description: issue.description,
+      state: issue.state,
+      priority: issue.priority,
+      labels: issue.labels |> Enum.map(&to_string/1) |> Enum.reject(&(&1 == "")) |> Enum.sort(),
+      branch_name: issue.branch_name,
+      url: issue.url,
+      repo_url: Map.get(issue, :repo_url),
+      project_dir: Map.get(issue, :project_dir),
+      created_at: format_datetime(issue.created_at),
+      updated_at: format_datetime(issue.updated_at),
+      source: "tracker"
+    }
+  end
+
+  defp format_datetime(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
+  defp format_datetime(_), do: nil
 
   @spec refresh_payload(GenServer.name()) :: {:ok, map()} | {:error, :unavailable}
   def refresh_payload(orchestrator) do
