@@ -4,7 +4,7 @@ defmodule SymphonyElixir.Workspace do
   """
 
   require Logger
-  alias SymphonyElixir.{Config, PathSafety, SSH}
+  alias SymphonyElixir.{AgentEnv, Config, PathSafety, SSH}
 
   @remote_workspace_marker "__SYMPHONY_WORKSPACE__"
   @workspace_identifier_pattern ~r/^[A-Za-z0-9][A-Za-z0-9._-]*[-_][A-Za-z0-9][A-Za-z0-9._-]*$/
@@ -544,17 +544,32 @@ defmodule SymphonyElixir.Workspace do
   # being templated into the command string. Used by both the local sh exec
   # and (via hook_env_exports/1) the SSH command path.
   defp hook_env(issue_context) when is_map(issue_context) do
-    [
-      {"SYMPHONY_ISSUE_ID", issue_context[:issue_id]},
-      {"SYMPHONY_ISSUE_IDENTIFIER", issue_context[:issue_identifier]},
-      {"SYMPHONY_ISSUE_TITLE", issue_context[:issue_title]},
-      {"SYMPHONY_ISSUE_STATE", issue_context[:issue_state]},
-      {"SYMPHONY_ISSUE_URL", issue_context[:issue_url]},
-      {"SYMPHONY_ISSUE_REPO_URL", issue_context[:issue_repo_url]},
-      {"SYMPHONY_ISSUE_PROJECT_DIR", issue_context[:issue_project_dir]}
-    ]
-    |> Enum.reject(fn {_name, value} -> is_nil(value) or value == "" end)
-    |> Enum.map(fn {name, value} -> {name, to_string(value)} end)
+    issue_env =
+      [
+        {"SYMPHONY_ISSUE_ID", issue_context[:issue_id]},
+        {"SYMPHONY_ISSUE_IDENTIFIER", issue_context[:issue_identifier]},
+        {"SYMPHONY_ISSUE_TITLE", issue_context[:issue_title]},
+        {"SYMPHONY_ISSUE_STATE", issue_context[:issue_state]},
+        {"SYMPHONY_ISSUE_URL", issue_context[:issue_url]},
+        {"SYMPHONY_ISSUE_REPO_URL", issue_context[:issue_repo_url]},
+        {"SYMPHONY_ISSUE_PROJECT_DIR", issue_context[:issue_project_dir]}
+      ]
+      |> Enum.reject(fn {_name, value} -> is_nil(value) or value == "" end)
+      |> Enum.map(fn {name, value} -> {name, to_string(value)} end)
+
+    issue_env ++ resolved_agent_env()
+  end
+
+  defp resolved_agent_env do
+    case AgentEnv.resolve() do
+      {:ok, env} ->
+        env
+
+      {:error, reason} ->
+        Logger.warning("Hook env: agent.gh_token_keychain unreadable, hooks will run without GH_TOKEN reason=#{inspect(reason)}")
+
+        []
+    end
   end
 
   defp hook_env_exports(issue_context) when is_map(issue_context) do

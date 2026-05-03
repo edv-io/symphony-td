@@ -1407,4 +1407,93 @@ defmodule SymphonyElixir.AppServerTest do
       File.rm_rf(test_root)
     end
   end
+
+  test "app server forwards agent.env_passthrough vars into the codex child process" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-env-passthrough-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "MT-1234")
+      codex_binary = Path.join(test_root, "fake-codex")
+      env_trace_file = Path.join(test_root, "codex-env.trace")
+      passthrough_var = "SYMPHONY_AGENT_ENV_TEST_#{System.unique_integer([:positive])}"
+      passthrough_value = "agent-env-#{System.unique_integer([:positive])}"
+
+      previous_trace = System.get_env("SYMP_TEST_CODEx_TRACE")
+      previous_env_trace = System.get_env("SYMP_TEST_CODEx_ENV_TRACE")
+      previous_passthrough = System.get_env(passthrough_var)
+
+      on_exit(fn ->
+        restore_env("SYMP_TEST_CODEx_TRACE", previous_trace)
+        restore_env("SYMP_TEST_CODEx_ENV_TRACE", previous_env_trace)
+        restore_env(passthrough_var, previous_passthrough)
+      end)
+
+      System.put_env("SYMP_TEST_CODEx_ENV_TRACE", env_trace_file)
+      System.put_env(passthrough_var, passthrough_value)
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      env_trace="${SYMP_TEST_CODEx_ENV_TRACE:-/tmp/codex-env.trace}"
+      env > "$env_trace"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-1234"}}}'
+            ;;
+          3)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-1234"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+          *)
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        agent_env_passthrough: [passthrough_var]
+      )
+
+      issue = %Issue{
+        id: "issue-env-passthrough",
+        identifier: "MT-1234",
+        title: "Validate agent env passthrough",
+        description: "Ensure GH_TOKEN-class env reaches the codex child process",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-1234",
+        labels: ["backend"]
+      }
+
+      assert {:ok, _result} = AppServer.run(workspace, "Validate env passthrough", issue)
+      assert File.exists?(env_trace_file)
+
+      env_dump = File.read!(env_trace_file)
+
+      assert env_dump =~ "#{passthrough_var}=#{passthrough_value}",
+             "expected codex child env to include #{passthrough_var}=<value>; got:\n#{env_dump}"
+    after
+      File.rm_rf(test_root)
+    end
+  end
 end
