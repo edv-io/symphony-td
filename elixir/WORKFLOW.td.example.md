@@ -21,12 +21,20 @@ hooks:
   # Each issue lives in a different repo. Symphony injects per-issue env vars
   # into hooks (SYMPHONY_ISSUE_REPO_URL, SYMPHONY_ISSUE_PROJECT_DIR, etc.) so
   # the after_create hook can clone the right tree.
+  #
+  # GH_TOKEN is also injected when agent.gh_token_keychain is set below. The
+  # inline credential helper teaches git to authenticate over HTTPS using that
+  # env var instead of `gh auth git-credential` (which would otherwise prompt
+  # the macOS keychain — a call the codex sandbox blocks).
   after_create: |
     if [ -z "$SYMPHONY_ISSUE_REPO_URL" ]; then
       echo "Symphony did not provide SYMPHONY_ISSUE_REPO_URL; aborting workspace bootstrap" >&2
       exit 1
     fi
     git clone --depth 1 "$SYMPHONY_ISSUE_REPO_URL" .
+    if [ -n "$GH_TOKEN" ]; then
+      git config credential.helper '!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f'
+    fi
     if command -v mise >/dev/null 2>&1 && [ -f mise.toml ]; then
       mise trust && mise install
     fi
@@ -42,12 +50,29 @@ hooks:
 agent:
   max_concurrent_agents: 2
   max_turns: 20
+  # Name of a generic-password keychain entry holding a GitHub PAT. Symphony
+  # reads it once at startup via `security find-generic-password -s <name> -w`
+  # and injects the value as GH_TOKEN into both the codex child process and
+  # workspace hooks. Omit to leave agents without a publish path.
+  #
+  # Trust model: the codex sandbox protects the *workspace*, not your *auth*.
+  # Once an agent has GH_TOKEN it can reach any HTTPS endpoint that token
+  # accepts, so issue narrowly-scoped fine-grained PATs and rotate them.
+  gh_token_keychain: hubs:github.com/alex-edv
+  # Optional: forward additional env vars from the orchestrator to the agent
+  # (e.g. private CI tokens). GH_TOKEN is reserved.
+  # env_passthrough:
+  #   - HUBS_TOKEN_EDV_IO
 codex:
   command: codex --config 'model="gpt-5.5"' app-server
   approval_policy: never
   thread_sandbox: workspace-write
+  # networkAccess: true is required for agents to push commits and open PRs.
+  # The default is false (workspace-only); flip it explicitly so the trust
+  # model is documented in your config rather than implied.
   turn_sandbox_policy:
     type: workspaceWrite
+    networkAccess: true
 ---
 
 You are working on td issue {{ issue.identifier }}.

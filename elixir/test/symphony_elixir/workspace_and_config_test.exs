@@ -1069,6 +1069,44 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.settings!().worker.max_concurrent_agents_per_host == 2
   end
 
+  test "config parses agent.gh_token_keychain and agent.env_passthrough" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_gh_token_keychain: "hubs:github.com/alex-edv",
+      agent_env_passthrough: ["HUBS_TOKEN_EDV", "CI_DEPLOY_TOKEN"]
+    )
+
+    settings = Config.settings!()
+    assert settings.agent.gh_token_keychain == "hubs:github.com/alex-edv"
+    assert settings.agent.env_passthrough == ["HUBS_TOKEN_EDV", "CI_DEPLOY_TOKEN"]
+  end
+
+  test "config defaults gh_token_keychain to nil and env_passthrough to []" do
+    write_workflow_file!(Workflow.workflow_file_path())
+
+    settings = Config.settings!()
+    assert settings.agent.gh_token_keychain == nil
+    assert settings.agent.env_passthrough == []
+  end
+
+  test "config rejects malformed env_passthrough entries" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_env_passthrough: ["1BAD_NAME"]
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "agent.env_passthrough"
+    assert message =~ "1BAD_NAME"
+  end
+
+  test "config rejects GH_TOKEN in env_passthrough so the keychain path stays canonical" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      agent_env_passthrough: ["GH_TOKEN"]
+    )
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.validate!()
+    assert message =~ "GH_TOKEN is reserved"
+  end
+
   test "schema helpers cover custom type and state limit validation" do
     assert StringOrMap.type() == :map
     assert StringOrMap.embed_as(:json) == :self

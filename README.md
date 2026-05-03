@@ -90,6 +90,42 @@ tail -f ~/Projects/symphony-td/elixir/log/*.log
 To remove an issue from Symphony's queue mid-run, drop the `symphony` label or move it to a
 `terminal_states` value (`closed`).
 
+### Letting agents publish to GitHub
+
+Out of the box the codex sandbox blocks outbound network *and* the macOS keychain calls that `gh
+auth git-credential` relies on. Two pieces of `WORKFLOW.local.md` config remove that friction:
+
+1. **`agent.gh_token_keychain`** — name of a generic-password keychain entry holding a GitHub PAT
+   (e.g. `hubs:github.com/alex-edv`). Symphony reads it once at startup via `security
+   find-generic-password -s <name> -w` and injects the value as `GH_TOKEN` into the codex child
+   process and into workspace hooks. The keychain is read once per agent run, never written to
+   disk, and never logged.
+
+2. **`codex.turn_sandbox_policy.networkAccess: true`** — opens outbound network so agents can push
+   to `github.com` and call the GitHub API.
+
+The `after_create` hook in `WORKFLOW.td.example.md` shows the matching credential helper:
+
+```sh
+git config credential.helper '!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f'
+```
+
+That sidesteps `gh auth git-credential` entirely — git just reads `GH_TOKEN` from the agent's env.
+
+**Trust model.** The sandbox protects the workspace, not your auth. Once an agent has the token it
+can reach any HTTPS endpoint the token accepts, so:
+
+- Issue **narrowly-scoped fine-grained PATs** (one repo, the smallest set of permissions that
+  unblocks `git push` + `gh pr create`).
+- Rotate them on a schedule.
+- The orchestrator fails fast at startup if the configured keychain entry is missing or the
+  keychain is locked — you'll see `agent.gh_token_keychain configured but unreadable: ...` and the
+  process exits before any agent runs.
+
+If you set `worker.ssh_hosts` to dispatch to remote machines, the orchestrator still reads the
+keychain locally and prepends `export GH_TOKEN=...` to the SSH command — no `AcceptEnv` server
+config required.
+
 The local dashboard also exposes `/kanban` for td workflows. Open tasks without the filter label
 stay in Open; tasks carrying the label appear in Ready. Drag an Open card into Ready to add the
 configured `tracker.filter_label` without switching back to the terminal.

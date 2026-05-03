@@ -147,6 +147,8 @@ defmodule SymphonyElixir.Config.Schema do
       field(:max_turns, :integer, default: 20)
       field(:max_retry_backoff_ms, :integer, default: 300_000)
       field(:max_concurrent_agents_by_state, :map, default: %{})
+      field(:gh_token_keychain, :string)
+      field(:env_passthrough, {:array, :string}, default: [])
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -154,7 +156,14 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:max_concurrent_agents, :max_turns, :max_retry_backoff_ms, :max_concurrent_agents_by_state],
+        [
+          :max_concurrent_agents,
+          :max_turns,
+          :max_retry_backoff_ms,
+          :max_concurrent_agents_by_state,
+          :gh_token_keychain,
+          :env_passthrough
+        ],
         empty_values: []
       )
       |> validate_number(:max_concurrent_agents, greater_than: 0)
@@ -162,6 +171,7 @@ defmodule SymphonyElixir.Config.Schema do
       |> validate_number(:max_retry_backoff_ms, greater_than: 0)
       |> update_change(:max_concurrent_agents_by_state, &Schema.normalize_state_limits/1)
       |> Schema.validate_state_limits(:max_concurrent_agents_by_state)
+      |> Schema.validate_env_passthrough(:env_passthrough)
     end
   end
 
@@ -349,6 +359,28 @@ defmodule SymphonyElixir.Config.Schema do
   def normalize_state_limits(limits) when is_map(limits) do
     Enum.reduce(limits, %{}, fn {state_name, limit}, acc ->
       Map.put(acc, normalize_issue_state(to_string(state_name)), limit)
+    end)
+  end
+
+  @doc false
+  @spec validate_env_passthrough(Ecto.Changeset.t(), atom()) :: Ecto.Changeset.t()
+  def validate_env_passthrough(changeset, field) do
+    validate_change(changeset, field, fn ^field, names ->
+      Enum.flat_map(names, fn name ->
+        cond do
+          not is_binary(name) ->
+            [{field, "entries must be strings"}]
+
+          not Regex.match?(~r/^[A-Za-z_][A-Za-z0-9_]*$/, name) ->
+            [{field, "entry #{inspect(name)} is not a valid environment variable name"}]
+
+          name == "GH_TOKEN" ->
+            [{field, "GH_TOKEN is reserved; use agent.gh_token_keychain instead"}]
+
+          true ->
+            []
+        end
+      end)
     end)
   end
 
